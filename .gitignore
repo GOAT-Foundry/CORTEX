@@ -1,0 +1,31 @@
+# Binaries
+/cortex
+/cortex.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime data & SQLite
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Frontend dependencies & build outputs
+web/node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts
+web/tsconfig.tsbuildinfo
+
+# Environment & local overrides
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

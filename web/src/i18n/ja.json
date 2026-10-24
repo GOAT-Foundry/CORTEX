@@ -1,0 +1,64 @@
+{
+  "app": {
+    "title": "CORTEX",
+    "subtitle": "汎用 AI エージェント・アプリケーションフレームワーク",
+    "sdkBadge": "Norma v0.4.5 · MIT License",
+    "languageLabel": "表示・応答言語",
+    "agentSyncNotice": "UI の言語設定に AI エージェントの思考・出力言語が連動します"
+  },
+  "nav": {
+    "overview": "概要ダッシュボード",
+    "chat": "チャット",
+    "tasks": "自律タスク実行",
+    "timers": "タイマー・予約",
+    "collections": "JSON コレクション",
+    "settings": "LLM・拡張設定"
+  },
+  "overview": {
+    "heading": "ドメイン部分を作るだけで AI アプリが完成する基盤",
+    "description": "CORTEX は Go 単一バイナリ + Next.js + SQLite に、GitHub Copilot ネイティブ統合、標準ストリーミングチャット、Planner ⇄ Worker 自律グラフ実行、タイマー予約、汎用 JSON コレクションストアを統合したクリーンルーム実装フレームワークです。",
+    "cards": {
+      "copilotTitle": "GitHub Copilot & マルチ LLM",
+      "copilotDesc": "OAuth デバイスフロー認証、トークン自動交換、/chat/completions・/responses・/v1/messages 対応、フェイルオーバー、コスト集計。",
+      "chatTitle": "標準ストリーミングチャット",
+      "chatDesc": "エージェント切替、マルチターン履歴、Thinking・ツール呼び出しの SSE リアルタイム表示、ファイル添付。",
+      "tasksTitle": "自律タスク & グラフ実行",
+      "tasksDesc": "Goal 分解 → Planner ⇄ Worker 並列実行 → 汎用成果物（Artifact）＆レポート生成。",
+      "timersTitle": "タイマー & schedule_timer ツール",
+      "timersDesc": "Cron / 間隔実行、日時指定ワンショット予約 (run_at)、AI エージェント自身のタスク予約。",
+      "collectionsTitle": "Go 変更不要の JSON コレクション",
+      "collectionsDesc": "/api/collections/{name} と組み込みツールにより、Next.js 画面とエージェント間でデータを直接読み書き。",
+      "i18nTitle": "標準多言語対応 (日 / 英)",
+      "i18nDesc": "UI の日英切り替えに連動し、AI エージェントの応答・レポート出力言語も自動で切り替わります。"
+    }
+  },
+  "chat": {
+    "title": "標準エージェントチャット",
+    "subtitle": "Thinking・ツール呼び出しを可視化する SSE リアルタイムストリーミング",
+    "placeholder": "エージェントへの質問や、コレクション操作・タイマー予約を入力...",
+    "send": "送信",
+    "agentLabel": "使用エージェント",
+    "defaultAgent": "標準汎用エージェント"
+  },
+  "tasks": {
+    "title": "自律タスク & グラフ実行",
+    "subtitle": "Goal 分解 → Planner ⇄ Worker 並列実行 → 成果物 (Artifact) 生成",
+    "newGoalPlaceholder": "自律分解・並列実行したい目標 (Goal) を入力...",
+    "launchGoal": "分解して実行"
+  },
+  "timers": {
+    "title": "タイマー・スケジューラ",
+    "subtitle": "定期実行 (Cron / 間隔)、ワンショット予約 (run_at)、およびエージェント予約 (schedule_timer)",
+    "empty": "登録されているタイマーはまだありません。"
+  },
+  "collections": {
+    "title": "汎用 JSON コレクションストア",
+    "subtitle": "Next.js 画面 (/api/collections/{name}) と AI エージェント間で共有されるスキーマレス DB",
+    "sampleCollection": "projects"
+  },
+  "settings": {
+    "title": "LLM 設定・GitHub Copilot・拡張機能",
+    "subtitle": "GitHub Copilot デバイスフロー認証、プリセット、フェイルオーバー、MCP、スキル、カスタムツール管理",
+    "connectCopilot": "GitHub デバイスフローで接続"
+  }
+}
