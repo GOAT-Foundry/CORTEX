@@ -1,18 +1,24 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"iter"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/mcp"
 	"github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/skill"
 	"github.com/Autumn-27/norma/tool"
@@ -62,6 +68,7 @@ type Runtime struct {
 	store       *store.Store
 	i18n        *i18n.Manager
 	hub         *llmhub.Hub
+	skillsMu    sync.RWMutex
 	skills      *skill.Registry
 	transcripts *transcript.Store
 }
@@ -107,20 +114,77 @@ func (r *Runtime) Hub() *llmhub.Hub {
 	return r.hub
 }
 
-// SkillsList returns the names and descriptions of loaded skills.
+// SkillsList returns the names, descriptions, and instructions of loaded skills.
 func (r *Runtime) SkillsList() []map[string]string {
-	if r.skills == nil {
+	r.skillsMu.RLock()
+	reg := r.skills
+	r.skillsMu.RUnlock()
+	if reg == nil {
 		return []map[string]string{}
 	}
-	list := r.skills.List()
+	list := reg.List()
 	out := make([]map[string]string, 0, len(list))
 	for _, s := range list {
 		out = append(out, map[string]string{
-			"name":        s.Name,
-			"description": s.Description,
+			"name":         s.Name,
+			"description":  s.Description,
+			"instructions": s.Instructions,
 		})
 	}
 	return out
+}
+
+// ReloadSkills reloads the skill registry from r.cfg.SkillsDir.
+func (r *Runtime) ReloadSkills() error {
+	if r.cfg.SkillsDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(r.cfg.SkillsDir, 0o755); err != nil {
+		return err
+	}
+	reg, err := skill.LoadDir(r.cfg.SkillsDir)
+	if err != nil {
+		return err
+	}
+	r.skillsMu.Lock()
+	r.skills = reg
+	r.skillsMu.Unlock()
+	return nil
+}
+
+// SaveSkill writes a SKILL.md package under SkillsDir/<name>/SKILL.md and hot-reloads the registry.
+func (r *Runtime) SaveSkill(name, description, instructions string) error {
+	if err := store.ValidateIdent(name); err != nil {
+		return err
+	}
+	dir := filepath.Join(r.cfg.SkillsDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.WriteString("name: " + name + "\n")
+	b.WriteString("description: " + strings.ReplaceAll(strings.TrimSpace(description), "\n", " ") + "\n")
+	b.WriteString("license: MIT\n")
+	b.WriteString("---\n\n")
+	b.WriteString(strings.TrimSpace(instructions) + "\n")
+
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(b.String()), 0o644); err != nil {
+		return err
+	}
+	return r.ReloadSkills()
+}
+
+// DeleteSkill removes a skill directory under SkillsDir/<name> and reloads the registry.
+func (r *Runtime) DeleteSkill(name string) error {
+	if err := store.ValidateIdent(name); err != nil {
+		return err
+	}
+	dir := filepath.Join(r.cfg.SkillsDir, name)
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return r.ReloadSkills()
 }
 
 // NewSession constructs a Norma agentcore.Session equipped with CORTEX domain
@@ -152,9 +216,16 @@ func (r *Runtime) NewSessionWithProvider(ctx context.Context, localeOverride, pr
 
 // NewSessionWithOptions constructs and optionally resumes a stateful Norma Session.
 func (r *Runtime) NewSessionWithOptions(ctx context.Context, opts SessionOptions) (*agentcore.Session, error) {
+	sess, _, err := r.NewSessionWithCleanup(ctx, opts)
+	return sess, err
+}
+
+// NewSessionWithCleanup constructs a stateful Norma Session and returns a cleanup function
+// that closes both the session and any spawned MCP stdio subprocesses.
+func (r *Runtime) NewSessionWithCleanup(ctx context.Context, opts SessionOptions) (*agentcore.Session, func(), error) {
 	if opts.SessionID != "" {
 		if err := store.ValidateIdent(opts.SessionID); err != nil {
-			return nil, err
+			return nil, func() {}, err
 		}
 	}
 	personaPrompt := "You are CORTEX, an autonomous AI Agent running inside the CORTEX application framework."
@@ -188,10 +259,13 @@ func (r *Runtime) NewSessionWithOptions(ctx context.Context, opts SessionOptions
 		})
 	}
 	if err != nil {
-		return nil, err
+		return nil, func() {}, err
 	}
 
 	tools := append(tool.DefaultTools(), r.cortexTools()...)
+	tools = append(tools, r.buildCustomTools(ctx)...)
+	mcpTools, mcpCleanup := r.connectMCPTools(ctx)
+	tools = append(tools, mcpTools...)
 
 	sysPrompt := []string{
 		personaPrompt,
@@ -199,16 +273,43 @@ func (r *Runtime) NewSessionWithOptions(ctx context.Context, opts SessionOptions
 		"Always follow the # activeLocale directive in <system-reminder> for your response and artifact language.",
 	}
 
+	r.skillsMu.RLock()
+	skillsReg := r.skills
+	r.skillsMu.RUnlock()
+
+	wsBackend := "ddgs"
+	var braveKey, tavilyKey string
+	if r.store != nil {
+		if b, err := r.store.GetSetting(ctx, "web_search_backend"); err == nil && b != "" {
+			wsBackend = b
+		}
+		if k, err := r.store.GetSetting(ctx, "brave_api_key"); err == nil {
+			braveKey = k
+		}
+		if k, err := r.store.GetSetting(ctx, "tavily_api_key"); err == nil {
+			tavilyKey = k
+		}
+	}
+	if wsBackend == "brave-free" && braveKey == "" && os.Getenv("BRAVE_SEARCH_API_KEY") == "" {
+		wsBackend = "ddgs"
+	}
+	if wsBackend == "tavily" && tavilyKey == "" && os.Getenv("TAVILY_API_KEY") == "" {
+		wsBackend = "ddgs"
+	}
+
 	acOpts := agentcore.Options{
-		Provider:        prov,
-		SystemPrompt:    sysPrompt,
-		Tools:           tools,
-		Skills:          r.skills,
-		EnableWebFetch:  true,
-		EnableWebSearch: true,
-		PermissionMode:  permission.ModeAuto,
-		Transcript:      r.transcripts,
-		SessionID:       opts.SessionID,
+		Provider:           prov,
+		SystemPrompt:       sysPrompt,
+		Tools:              tools,
+		Skills:             skillsReg,
+		EnableWebFetch:     true,
+		EnableWebSearch:    true,
+		WebSearchBackend:   wsBackend,
+		BraveSearchAPIKey:  braveKey,
+		TavilySearchAPIKey: tavilyKey,
+		PermissionMode:     permission.ModeAuto,
+		Transcript:         r.transcripts,
+		SessionID:          opts.SessionID,
 		SystemReminderFunc: func() string {
 			return r.i18n.SystemReminder(opts.Locale)
 		},
@@ -218,7 +319,11 @@ func (r *Runtime) NewSessionWithOptions(ctx context.Context, opts SessionOptions
 	if opts.SessionID != "" && r.transcripts != nil {
 		_ = sess.Resume(opts.SessionID)
 	}
-	return sess, nil
+	cleanup := func() {
+		_ = sess.Close()
+		mcpCleanup()
+	}
+	return sess, cleanup, nil
 }
 
 // DeleteSessionTranscript removes the on-disk Norma transcript file for sessionID.
@@ -238,11 +343,12 @@ func (r *Runtime) DeleteSessionTranscript(sessionID string) error {
 
 // StreamPrompt runs a single prompt through a Norma session and yields harness events.
 func (r *Runtime) StreamPrompt(ctx context.Context, prompt, locale string) (iter.Seq2[harness.Event, error], func(), error) {
-	sess, err := r.NewSession(locale)
+	sess, cleanup, err := r.NewSessionWithCleanup(ctx, SessionOptions{
+		Locale: locale,
+	})
 	if err != nil {
 		return nil, func() {}, err
 	}
-	cleanup := func() { _ = sess.Close() }
 	return sess.Prompt(ctx, prompt), cleanup, nil
 }
 
@@ -456,4 +562,148 @@ func (r *Runtime) cortexTools() []tool.CoreTool {
 	})
 
 	return []tool.CoreTool{colList, colGet, colPut, colDelete, scheduleTimer}
+}
+
+func (r *Runtime) buildCustomTools(ctx context.Context) []tool.CoreTool {
+	if r.store == nil {
+		return nil
+	}
+	configs, err := r.store.ListCustomTools(ctx)
+	if err != nil {
+		return nil
+	}
+	allowAll := func(context.Context, json.RawMessage, permission.Context) permission.Decision {
+		return permission.Allowed()
+	}
+	out := make([]tool.CoreTool, 0, len(configs))
+	for _, cfg := range configs {
+		if !cfg.Enabled {
+			continue
+		}
+		c := cfg
+		schema := map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"input": map[string]any{"type": "string", "description": "Tool input"},
+			},
+		}
+		if c.SchemaJSON != "" {
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(c.SchemaJSON), &parsed); err == nil && len(parsed) > 0 {
+				schema = parsed
+			}
+		}
+		out = append(out, tool.Build(tool.Spec{
+			Name:        c.Name,
+			Description: c.Description,
+			Schema:      schema,
+			Permissions: allowAll,
+			Run: func(runCtx context.Context, input json.RawMessage, _ *tool.ToolContext) (tool.Result, error) {
+				return executeCustomTool(runCtx, c, input)
+			},
+		}))
+	}
+	return out
+}
+
+func executeCustomTool(ctx context.Context, c store.CustomToolConfig, input json.RawMessage) (tool.Result, error) {
+	runCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	switch c.Runner {
+	case "http":
+		method := strings.ToUpper(strings.TrimSpace(c.Method))
+		if method == "" {
+			method = http.MethodPost
+		}
+		var bodyReader io.Reader
+		if method != http.MethodGet && method != http.MethodHead {
+			bodyReader = bytes.NewReader(input)
+		}
+		req, err := http.NewRequestWithContext(runCtx, method, c.Target, bodyReader)
+		if err != nil {
+			return tool.Errorf(err.Error()), nil
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return tool.Errorf(err.Error()), nil
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+		if resp.StatusCode >= 400 {
+			return tool.Errorf(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(raw))), nil
+		}
+		return tool.Text(string(raw)), nil
+
+	case "python":
+		pyBin := "python3"
+		if _, err := exec.LookPath(pyBin); err != nil {
+			pyBin = "python"
+		}
+		cmd := exec.CommandContext(runCtx, pyBin, "-c", c.Target)
+		cmd.Stdin = bytes.NewReader(input)
+		cmd.Env = append(os.Environ(), "CORTEX_TOOL_INPUT="+string(input))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return tool.Errorf(fmt.Sprintf("%v: %s", err, string(out))), nil
+		}
+		return tool.Text(string(out)), nil
+
+	case "bash":
+		shBin := "bash"
+		if _, err := exec.LookPath(shBin); err != nil {
+			shBin = "sh"
+		}
+		cmd := exec.CommandContext(runCtx, shBin, "-c", c.Target)
+		cmd.Stdin = bytes.NewReader(input)
+		cmd.Env = append(os.Environ(), "CORTEX_TOOL_INPUT="+string(input))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return tool.Errorf(fmt.Sprintf("%v: %s", err, string(out))), nil
+		}
+		return tool.Text(string(out)), nil
+
+	default:
+		return tool.Errorf("unsupported runner: " + c.Runner), nil
+	}
+}
+
+func (r *Runtime) connectMCPTools(ctx context.Context) ([]tool.CoreTool, func()) {
+	if r.store == nil {
+		return nil, func() {}
+	}
+	servers, err := r.store.ListMCPServers(ctx)
+	if err != nil || len(servers) == 0 {
+		return nil, func() {}
+	}
+	var (
+		out     []tool.CoreTool
+		clients []*mcp.Client
+	)
+	for _, srv := range servers {
+		if !srv.Enabled || strings.TrimSpace(srv.Command) == "" {
+			continue
+		}
+		initCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		client, err := mcp.NewStdioClient(initCtx, srv.ID, srv.Command, srv.Env, srv.Args...)
+		if err != nil {
+			cancel()
+			continue
+		}
+		tools, err := client.Tools(initCtx)
+		cancel()
+		if err != nil {
+			_ = client.Close()
+			continue
+		}
+		clients = append(clients, client)
+		out = append(out, tools...)
+	}
+	cleanup := func() {
+		for _, c := range clients {
+			_ = c.Close()
+		}
+	}
+	return out, cleanup
 }

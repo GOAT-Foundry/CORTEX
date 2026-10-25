@@ -17,6 +17,7 @@ import (
 func TestServerEndpoints(t *testing.T) {
 	cfg := config.Load()
 	cfg.DBPath = ":memory:"
+	cfg.SkillsDir = t.TempDir()
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -181,5 +182,54 @@ func TestServerEndpoints(t *testing.T) {
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/chat/sessions/sess-test-1", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete chat session status = %d", rec.Code)
+	}
+
+	// 6. Extensibility Suite: Agent CRUD, Skills, MCP, Custom Tools, and WebSearch
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/agents/default", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when deleting default agent, got %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/skills", bytes.NewBufferString(`{"name":"audit-skill","description":"Audit helper","instructions":"# Audit Steps"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create skill status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/skills/audit-skill", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete skill status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/mcp", bytes.NewBufferString(`{"id":"fs-mcp","name":"Filesystem","command":"npx","args":["-y","@modelcontextprotocol/server-filesystem"],"enabled":false}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save mcp status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/mcp/fs-mcp", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete mcp status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/custom", bytes.NewBufferString(`{"id":"ping_tool","name":"ping_tool","description":"Ping tool","runner":"bash","target":"echo pong","enabled":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save custom tool status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/tools/custom/ping_tool", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete custom tool status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/websearch", bytes.NewBufferString(`{"backend":"ddgs"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put websearch status = %d", rec.Code)
 	}
 }

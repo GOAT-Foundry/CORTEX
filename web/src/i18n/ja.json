@@ -91,7 +91,18 @@
     "subtitle": "Next.js 画面 (/api/collections/{name}) と AI エージェント間で共有されるスキーマレス DB",
     "cardSubtitle": "Go コードの変更なしでドメインアプリと AI エージェント間のデータを永続化",
     "sampleCollection": "projects",
-    "codeComment": "// Next.js ドメイン画面および AI エージェントから直接読み書き可能:"
+    "codeComment": "// Next.js ドメイン画面および AI エージェントから直接読み書き可能:",
+    "collectionsList": "コレクション一覧",
+    "newCollectionPlaceholder": "コレクション名 (例: projects)",
+    "openCollection": "開く",
+    "noCollections": "コレクションはまだありません",
+    "itemsTitle": "ドキュメント一覧:",
+    "noItems": "このコレクションにはまだドキュメントがありません",
+    "docIdPlaceholder": "ドキュメント ID (例: item-1)",
+    "jsonBodyLabel": "JSON ドキュメント本体",
+    "saveDoc": "ドキュメント保存",
+    "deleteDoc": "削除",
+    "invalidJson": "JSON の形式が正しくありません"
   },
   "settings": {
     "title": "LLM 設定・GitHub Copilot・拡張機能",
@@ -111,6 +122,8 @@
     "providersSubtitle": "API キー、通信フォーマット、標準モデル、フェイルオーバー順序 (Priority 1 = 最優先) を設定します",
     "saveBtn": "保存",
     "testBtn": "接続テスト",
+    "deleteBtn": "削除",
+    "addBtn": "追加",
     "enabledLabel": "有効",
     "priorityLabel": "優先度",
     "formatLabel": "通信フォーマット",
@@ -125,6 +138,11 @@
     "outputTokens": "出力トークン",
     "totalCost": "推定コスト (USD)",
     "noUsageYet": "まだモデル呼び出し履歴がありません。",
+    "agentStudioTitle": "エージェント & プロンプトスタジオ",
+    "agentStudioSubtitle": "再利用可能な AI エージェントペルソナとシステムプロンプトを作成・管理します",
+    "agentIdPlaceholder": "エージェント ID (例: analyst)",
+    "agentNamePlaceholder": "表示名",
+    "agentPromptPlaceholder": "システムプロンプト指示...",
     "presets": {
       "copilotName": "GitHub Copilot (ネイティブ統合)",
       "copilotBadge": "OAuth デバイスフロー",
@@ -136,9 +154,19 @@
       "othersEndpoints": "OpenAI 互換エンドポイント",
       "othersBadge": "プリセット"
     },
-    "skillsCardTitle": "スキル & MCP 接続",
-    "skillsCardSubtitle": "skills/*/SKILL.md パッケージおよび Model Context Protocol サーバー管理",
-    "toolsCardTitle": "カスタムツール & Web 検索 (ddgs)",
-    "toolsCardSubtitle": "Python / Bash / HTTP カスタムツールおよびキー不要の DuckDuckGo 検索"
+    "skillsCardTitle": "スキル (skills/*/SKILL.md) & MCP 接続",
+    "skillsCardSubtitle": "ホットリロード対応の SKILL.md パッケージおよび Model Context Protocol サーバー管理",
+    "skillNamePlaceholder": "スキル ID (例: data-audit)",
+    "skillDescPlaceholder": "スキルの説明",
+    "skillBodyPlaceholder": "SKILL.md の手順・指示 (Markdown)...",
+    "mcpIdPlaceholder": "サーバー ID (例: filesystem)",
+    "mcpCmdPlaceholder": "コマンド (例: npx)",
+    "mcpArgsPlaceholder": "引数 (スペース区切り)",
+    "toolsCardTitle": "カスタムツール (Python / Bash / HTTP) & Web 検索 (ddgs)",
+    "toolsCardSubtitle": "Go コード変更不要の動的ツール登録およびキー不要の DuckDuckGo 検索設定",
+    "toolNamePlaceholder": "ツール名 (例: calc_metrics)",
+    "toolDescPlaceholder": "ツールの説明",
+    "toolTargetPlaceholder": "Python コード、Bash コマンド、または HTTP URL",
+    "webSearchLabel": "Web 検索バックエンド"
   }
 }

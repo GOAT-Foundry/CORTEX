@@ -49,16 +49,25 @@ func New(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager, rt *agent.Ru
 	return s
 }
 
-// ServeHTTP implements http.Handler with permissive CORS for local Next.js dev.
+// ServeHTTP implements http.Handler with loopback-restricted CORS for local Next.js dev.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Cortex-Locale")
+	origin := r.Header.Get("Origin")
+	if isLoopbackOrigin(origin) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Cortex-Locale")
+	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func isLoopbackOrigin(origin string) bool {
+	return origin != "" && (len(origin) >= 16 && (origin[:16] == "http://localhost" || origin[:16] == "http://127.0.0.1" ||
+		(len(origin) >= 17 && (origin[:17] == "https://localhost" || origin[:17] == "https://127.0.0.1"))))
 }
 
 func (s *Server) registerRoutes() {
@@ -76,6 +85,21 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/providers/copilot/auth", s.handleCopilotDisconnect)
 	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
+	s.mux.HandleFunc("POST /api/skills", s.handleSaveSkill)
+	s.mux.HandleFunc("DELETE /api/skills/{name}", s.handleDeleteSkill)
+
+	s.mux.HandleFunc("GET /api/mcp", s.handleListMCP)
+	s.mux.HandleFunc("POST /api/mcp", s.handleSaveMCP)
+	s.mux.HandleFunc("PUT /api/mcp/{id}", s.handleSaveMCP)
+	s.mux.HandleFunc("DELETE /api/mcp/{id}", s.handleDeleteMCP)
+
+	s.mux.HandleFunc("GET /api/tools/custom", s.handleListCustomTools)
+	s.mux.HandleFunc("POST /api/tools/custom", s.handleSaveCustomTool)
+	s.mux.HandleFunc("PUT /api/tools/custom/{id}", s.handleSaveCustomTool)
+	s.mux.HandleFunc("DELETE /api/tools/custom/{id}", s.handleDeleteCustomTool)
+
+	s.mux.HandleFunc("GET /api/websearch", s.handleGetWebSearch)
+	s.mux.HandleFunc("PUT /api/websearch", s.handlePutWebSearch)
 
 	// Generic JSON Collection Store API
 	s.mux.HandleFunc("GET /api/collections", s.handleListCollections)
@@ -93,6 +117,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
 	s.mux.HandleFunc("POST /api/agents", s.handleSaveAgent)
 	s.mux.HandleFunc("PUT /api/agents/{id}", s.handleSaveAgent)
+	s.mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 
 	s.mux.HandleFunc("GET /api/chat/sessions", s.handleListChatSessions)
 	s.mux.HandleFunc("POST /api/chat/sessions", s.handleCreateChatSession)
@@ -320,6 +345,241 @@ func (s *Server) handleSkills(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) handleSaveSkill(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime unavailable")
+		return
+	}
+	var body struct {
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+		Instructions string `json:"instructions"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Name == "" || body.Description == "" || body.Instructions == "" {
+		writeError(w, http.StatusBadRequest, "name, description, and instructions are required")
+		return
+	}
+	if err := s.runtime.SaveSkill(body.Name, body.Description, body.Instructions); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"saved":  body.Name,
+		"skills": s.runtime.SkillsList(),
+	})
+}
+
+func (s *Server) handleDeleteSkill(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil {
+		writeError(w, http.StatusServiceUnavailable, "runtime unavailable")
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.runtime.DeleteSkill(name); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": name,
+		"skills":  s.runtime.SkillsList(),
+	})
+}
+
+func maskMCPEnv(m store.MCPServerConfig) store.MCPServerConfig {
+	if len(m.Env) == 0 {
+		return m
+	}
+	masked := make(map[string]string, len(m.Env))
+	for k, v := range m.Env {
+		if v != "" {
+			masked[k] = "••••••••"
+		} else {
+			masked[k] = ""
+		}
+	}
+	m.Env = masked
+	return m
+}
+
+func (s *Server) handleListMCP(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"servers": []store.MCPServerConfig{}})
+		return
+	}
+	servers, err := s.store.ListMCPServers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for i := range servers {
+		servers[i] = maskMCPEnv(servers[i])
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+}
+
+func (s *Server) handleSaveMCP(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var in store.MCPServerConfig
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if pathID := r.PathValue("id"); pathID != "" {
+		in.ID = pathID
+	}
+	if in.ID == "" {
+		in.ID = fmt.Sprintf("mcp-%d", time.Now().UTC().UnixNano())
+	}
+	if in.Command == "" {
+		writeError(w, http.StatusBadRequest, "command is required")
+		return
+	}
+	saved, err := s.store.SaveMCPServer(r.Context(), in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, maskMCPEnv(saved))
+}
+
+func (s *Server) handleDeleteMCP(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteMCPServer(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+func (s *Server) handleListCustomTools(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"tools": []store.CustomToolConfig{}})
+		return
+	}
+	tools, err := s.store.ListCustomTools(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tools": tools})
+}
+
+func (s *Server) handleSaveCustomTool(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var in store.CustomToolConfig
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if pathID := r.PathValue("id"); pathID != "" {
+		in.ID = pathID
+	}
+	if in.ID == "" {
+		in.ID = in.Name
+	}
+	if in.Name == "" || in.Description == "" || in.Target == "" {
+		writeError(w, http.StatusBadRequest, "name, description, and target are required")
+		return
+	}
+	saved, err := s.store.SaveCustomTool(r.Context(), in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleDeleteCustomTool(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteCustomTool(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+func (s *Server) handleGetWebSearch(w http.ResponseWriter, r *http.Request) {
+	backend := "ddgs"
+	hasBrave := false
+	hasTavily := false
+	if s.store != nil {
+		if b, err := s.store.GetSetting(r.Context(), "web_search_backend"); err == nil && b != "" {
+			backend = b
+		}
+		if k, err := s.store.GetSetting(r.Context(), "brave_api_key"); err == nil && k != "" {
+			hasBrave = true
+		}
+		if k, err := s.store.GetSetting(r.Context(), "tavily_api_key"); err == nil && k != "" {
+			hasTavily = true
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"backend":          backend,
+		"supported":        []string{"ddgs", "brave-free", "tavily"},
+		"has_brave_key":    hasBrave,
+		"has_tavily_key":   hasTavily,
+		"default_keyless":  "ddgs",
+	})
+}
+
+func (s *Server) handlePutWebSearch(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var body struct {
+		Backend      string `json:"backend"`
+		BraveAPIKey  string `json:"brave_api_key"`
+		TavilyAPIKey string `json:"tavily_api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	switch body.Backend {
+	case "", "ddgs":
+		body.Backend = "ddgs"
+	case "brave-free", "tavily":
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported web search backend (use ddgs, brave-free, or tavily)")
+		return
+	}
+	_ = s.store.SetSetting(r.Context(), "web_search_backend", body.Backend)
+	if body.BraveAPIKey != "" {
+		_ = s.store.SetSetting(r.Context(), "brave_api_key", body.BraveAPIKey)
+	}
+	if body.TavilyAPIKey != "" {
+		_ = s.store.SetSetting(r.Context(), "tavily_api_key", body.TavilyAPIKey)
+	}
+	s.handleGetWebSearch(w, r)
+}
+
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	names, err := s.store.ListCollections(r.Context())
 	if err != nil {
@@ -510,6 +770,23 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteAgent(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
 func (s *Server) handleListChatSessions(w http.ResponseWriter, r *http.Request) {
@@ -806,7 +1083,7 @@ func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSess
 		})
 	}
 
-	sess, err := s.runtime.NewSessionWithOptions(r.Context(), agent.SessionOptions{
+	sess, cleanup, err := s.runtime.NewSessionWithCleanup(r.Context(), agent.SessionOptions{
 		SessionID:  sessionID,
 		AgentID:    agentID,
 		ProviderID: providerID,
@@ -817,7 +1094,7 @@ func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSess
 		sendSSE(w, flusher, "error", map[string]any{"error": err.Error()})
 		return
 	}
-	defer sess.Close()
+	defer cleanup()
 
 	fullPrompt := agent.FormatPromptWithAttachments(req.Prompt, req.Attachments)
 
