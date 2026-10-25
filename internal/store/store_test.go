@@ -52,4 +52,16 @@ func TestCollectionCRUD(t *testing.T) {
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
+
+	// Settings persistence
+	if _, err := st.GetSetting(ctx, "locale"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for unset locale, got %v", err)
+	}
+	if err := st.SetSetting(ctx, "locale", "ja"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+	val, err := st.GetSetting(ctx, "locale")
+	if err != nil || val != "ja" {
+		t.Fatalf("get setting: got (%q, %v), want (\"ja\", nil)", val, err)
+	}
 }

@@ -3,8 +3,12 @@
     "title": "CORTEX",
     "subtitle": "汎用 AI エージェント・アプリケーションフレームワーク",
     "sdkBadge": "Norma v0.4.5 · MIT License",
+    "singleBinaryBadge": "単一バイナリ対応",
+    "copilotNativeBadge": "GitHub Copilot ネイティブ統合",
     "languageLabel": "表示・応答言語",
-    "agentSyncNotice": "UI の言語設定に AI エージェントの思考・出力言語が連動します"
+    "agentSyncNotice": "UI の言語設定に AI エージェントの思考・出力言語が連動します",
+    "agentDirectiveTitle": "現在のエージェント出力言語ディレクティブ",
+    "agentDirectivePreview": "常に自然な日本語で応答・解説・レポートおよび成果物を生成します。"
   },
   "nav": {
     "overview": "概要ダッシュボード",
@@ -35,30 +39,62 @@
   "chat": {
     "title": "標準エージェントチャット",
     "subtitle": "Thinking・ツール呼び出しを可視化する SSE リアルタイムストリーミング",
+    "streamCardTitle": "SSE イベントストリーム · Thinking · ツール呼び出し",
     "placeholder": "エージェントへの質問や、コレクション操作・タイマー予約を入力...",
     "send": "送信",
     "agentLabel": "使用エージェント",
-    "defaultAgent": "標準汎用エージェント"
+    "defaultAgent": "標準汎用エージェント",
+    "skeletonReply": "[SSE Stream Skeleton] /api/chat (Norma v0.4.5 Session) へ接続準備完了。LLM プロバイダーを設定するとリアルタイム応答・ツール呼び出しがストリーミングされます。"
   },
   "tasks": {
     "title": "自律タスク & グラフ実行",
     "subtitle": "Goal 分解 → Planner ⇄ Worker 並列実行 → 成果物 (Artifact) 生成",
+    "pipelineTitle": "Planner ⇄ Worker 自律実行パイプライン",
+    "pipelineSubtitle": "Norma coordinator & サブエージェント並列実行による成果物生成",
     "newGoalPlaceholder": "自律分解・並列実行したい目標 (Goal) を入力...",
-    "launchGoal": "分解して実行"
+    "launchGoal": "分解して実行",
+    "step1Badge": "1. Goal 分解 (Planner)",
+    "step1Desc": "高レベルな目標を実行可能なサブタスクの依存グラフ (DAG) に分解します。",
+    "step2Badge": "2. 並列 Worker 実行",
+    "step2Desc": "ツール権限を持つ独立した Norma サブエージェントを並列起動して実行します。",
+    "step3Badge": "3. 成果物 (Artifact) & レポート",
+    "step3Desc": "各 Worker の出力を統合し、構造化 JSON や Markdown レポートを生成します。"
   },
   "timers": {
     "title": "タイマー・スケジューラ",
     "subtitle": "定期実行 (Cron / 間隔)、ワンショット予約 (run_at)、およびエージェント予約 (schedule_timer)",
+    "cardTitle": "GET / POST /api/timers · ツール: schedule_timer",
+    "cardSubtitle": "Cron 式、一定間隔、および RFC3339 日時指定ワンショット (run_at) に対応しています。",
+    "agentToolBadge": "エージェント標準ツール: schedule_timer",
     "empty": "登録されているタイマーはまだありません。"
   },
   "collections": {
     "title": "汎用 JSON コレクションストア",
     "subtitle": "Next.js 画面 (/api/collections/{name}) と AI エージェント間で共有されるスキーマレス DB",
-    "sampleCollection": "projects"
+    "cardSubtitle": "Go コードの変更なしでドメインアプリと AI エージェント間のデータを永続化",
+    "sampleCollection": "projects",
+    "codeComment": "// Next.js ドメイン画面および AI エージェントから直接読み書き可能:"
   },
   "settings": {
     "title": "LLM 設定・GitHub Copilot・拡張機能",
     "subtitle": "GitHub Copilot デバイスフロー認証、プリセット、フェイルオーバー、MCP、スキル、カスタムツール管理",
-    "connectCopilot": "GitHub デバイスフローで接続"
+    "copilotCardTitle": "GitHub Copilot ネイティブ統合 & LLM プロバイダープリセット",
+    "copilotCardSubtitle": "セッショントークン自動交換、フェイルオーバー、トークン・コスト集計",
+    "connectCopilot": "GitHub デバイスフローで接続",
+    "presets": {
+      "copilotName": "GitHub Copilot (ネイティブ統合)",
+      "copilotBadge": "OAuth デバイスフロー",
+      "openaiName": "OpenAI",
+      "openaiBadge": "API キー",
+      "anthropicName": "Anthropic Claude",
+      "anthropicBadge": "API キー",
+      "othersName": "Google Gemini / OpenRouter / Ollama",
+      "othersEndpoints": "OpenAI 互換エンドポイント",
+      "othersBadge": "プリセット"
+    },
+    "skillsCardTitle": "スキル & MCP 接続",
+    "skillsCardSubtitle": "skills/*/SKILL.md パッケージおよび Model Context Protocol サーバー管理",
+    "toolsCardTitle": "カスタムツール & Web 検索 (ddgs)",
+    "toolsCardSubtitle": "Python / Bash / HTTP カスタムツールおよびキー不要の DuckDuckGo 検索"
   }
 }

@@ -110,10 +110,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="text-sm text-zinc-400">{dict.app.subtitle}</div>
           <div className="flex items-center gap-2">
             <Badge className="border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
-              Single-Binary Ready
+              {dict.app.singleBinaryBadge}
             </Badge>
             <Badge className="border-sky-500/30 bg-sky-500/10 text-sky-300">
-              GitHub Copilot Native
+              {dict.app.copilotNativeBadge}
             </Badge>
           </div>
         </header>

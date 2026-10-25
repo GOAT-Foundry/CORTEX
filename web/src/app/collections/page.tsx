@@ -28,9 +28,7 @@ export default function CollectionsPage() {
             <Database className="h-4 w-4 text-sky-400" />
             /api/collections/&#123;name&#125;
           </CardTitle>
-          <CardDescription>
-            Zero-backend-code persistence for domain apps and AI agents
-          </CardDescription>
+          <CardDescription>{dict.collections.cardSubtitle}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
@@ -40,7 +38,7 @@ export default function CollectionsPage() {
             <Badge>collection_delete</Badge>
           </div>
           <pre className="rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-xs text-zinc-300 overflow-x-auto">
-            {`// Next.js Domain App or AI Agent can read/write directly:
+            {`${dict.collections.codeComment}
 PUT /api/collections/${dict.collections.sampleCollection}/item-1
 {
   "title": "Domain Record",

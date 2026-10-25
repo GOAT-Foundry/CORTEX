@@ -302,3 +302,36 @@ func (s *Store) SaveTimer(ctx context.Context, t TimerEntry) (TimerEntry, error)
 	`, t.ID, t.Name, t.Schedule, t.RunAt, t.Prompt, t.AgentID, enabled, t.CreatedBy, t.CreatedAt, t.UpdatedAt)
 	return t, err
 }
+
+// GetSetting retrieves a persisted key-value setting from SQLite.
+func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
+	if err := ValidateIdent(key); err != nil {
+		return "", err
+	}
+	var val string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+// SetSetting persists a key-value setting in SQLite.
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	if err := ValidateIdent(key); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO settings (key, value, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = excluded.updated_at
+	`, key, value, now)
+	return err
+}
+

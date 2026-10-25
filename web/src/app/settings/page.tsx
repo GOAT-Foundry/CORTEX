@@ -11,31 +11,32 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { KeyRound, Plug, Wrench } from "lucide-react";
+import { Globe, KeyRound, Plug, Wrench } from "lucide-react";
 
 export default function SettingsPage() {
-  const { dict } = useI18n();
+  const { dict, locale, directive } = useI18n();
+  const p = dict.settings.presets;
 
   const presets = [
     {
-      name: "GitHub Copilot (Native)",
+      name: p.copilotName,
       endpoints: "/chat/completions · /responses · /v1/messages · /models",
-      badge: "OAuth Device Flow",
+      badge: p.copilotBadge,
     },
     {
-      name: "OpenAI",
+      name: p.openaiName,
       endpoints: "/chat/completions · /responses",
-      badge: "API Key",
+      badge: p.openaiBadge,
     },
     {
-      name: "Anthropic Claude",
+      name: p.anthropicName,
       endpoints: "/v1/messages",
-      badge: "API Key",
+      badge: p.anthropicBadge,
     },
     {
-      name: "Google Gemini / OpenRouter / Ollama",
-      endpoints: "OpenAI Compatible",
-      badge: "Preset",
+      name: p.othersName,
+      endpoints: p.othersEndpoints,
+      badge: p.othersBadge,
     },
   ];
 
@@ -49,29 +50,41 @@ export default function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <KeyRound className="h-4 w-4 text-sky-400" />
-            GitHub Copilot Native &amp; LLM Provider Presets
+            <Globe className="h-4 w-4 text-sky-400" />
+            {dict.app.agentDirectiveTitle} ({locale.toUpperCase()})
           </CardTitle>
-          <CardDescription>
-            Automatic session token exchange, provider failover, and token/cost
-            telemetry
-          </CardDescription>
+          <CardDescription>{dict.app.agentSyncNotice}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <pre className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 text-xs text-sky-300 whitespace-pre-wrap">
+            {directive}
+          </pre>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-sky-400" />
+            {dict.settings.copilotCardTitle}
+          </CardTitle>
+          <CardDescription>{dict.settings.copilotCardSubtitle}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <Button>{dict.settings.connectCopilot}</Button>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {presets.map((p) => (
+            {presets.map((item) => (
               <div
-                key={p.name}
+                key={item.name}
                 className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 flex items-center justify-between"
               >
                 <div>
                   <div className="text-sm font-medium text-zinc-200">
-                    {p.name}
+                    {item.name}
                   </div>
-                  <div className="text-xs text-zinc-500">{p.endpoints}</div>
+                  <div className="text-xs text-zinc-500">{item.endpoints}</div>
                 </div>
-                <Badge>{p.badge}</Badge>
+                <Badge>{item.badge}</Badge>
               </div>
             ))}
           </div>
@@ -83,10 +96,10 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Plug className="h-4 w-4 text-sky-400" />
-              Skills &amp; MCP Connections
+              {dict.settings.skillsCardTitle}
             </CardTitle>
             <CardDescription>
-              skills/*/SKILL.md packages &amp; Model Context Protocol servers
+              {dict.settings.skillsCardSubtitle}
             </CardDescription>
           </CardHeader>
         </Card>
@@ -94,11 +107,9 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
               <Wrench className="h-4 w-4 text-sky-400" />
-              Custom Tools &amp; Web Search (ddgs)
+              {dict.settings.toolsCardTitle}
             </CardTitle>
-            <CardDescription>
-              Python / Bash / HTTP custom tools and keyless DuckDuckGo search
-            </CardDescription>
+            <CardDescription>{dict.settings.toolsCardSubtitle}</CardDescription>
           </CardHeader>
         </Card>
       </div>

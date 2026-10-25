@@ -154,7 +154,7 @@ func (r *Runtime) NewSession(localeOverride string) (*agentcore.Session, error) 
 	sysPrompt := []string{
 		"You are CORTEX, an autonomous AI Agent running inside the CORTEX application framework.",
 		"You have access to generic JSON domain collections (collection_list, collection_get, collection_put, collection_delete) and future task scheduling (schedule_timer).",
-		r.i18n.AgentLanguageDirective(localeOverride),
+		"Always follow the # activeLocale directive in <system-reminder> for your response and artifact language.",
 	}
 
 	sess := agentcore.NewSession(agentcore.Options{
@@ -165,6 +165,9 @@ func (r *Runtime) NewSession(localeOverride string) (*agentcore.Session, error) 
 		EnableWebFetch:  true,
 		EnableWebSearch: true,
 		PermissionMode:  permission.ModeAuto,
+		SystemReminderFunc: func() string {
+			return r.i18n.SystemReminder(localeOverride)
+		},
 	})
 	return sess, nil
 }
