@@ -20,22 +20,68 @@ export default function ChatPage() {
     Array<{ role: "user" | "assistant"; text: string }>
   >([]);
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
     const prompt = input.trim();
     setInput("");
-    setMessages((prev) => [
-      ...prev,
-      { role: "user", text: prompt },
-      {
-        role: "assistant",
-        text:
-          locale === "ja"
-            ? "[SSE Stream Skeleton] /api/chat (Norma v0.4.5 Session) へ接続準備完了。LLM プロバイダーを設定するとリアルタイム応答・ツール呼び出しがストリーミングされます。"
-            : "[SSE Stream Skeleton] Ready to stream from /api/chat (Norma v0.4.5 Session). Configure an LLM provider in Settings to stream live responses and tool calls.",
-      },
-    ]);
+    setMessages((prev) => [...prev, { role: "user", text: prompt }]);
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Cortex-Locale": locale,
+        },
+        body: JSON.stringify({ prompt, locale }),
+      });
+      if (!res.ok || !res.body) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: dict.chat.skeletonReply },
+        ]);
+        return;
+      }
+      const raw = await res.text();
+      if (raw.includes("event: error") || !raw.trim()) {
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", text: dict.chat.skeletonReply },
+        ]);
+        return;
+      }
+      let assembled = "";
+      for (const line of raw.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const ev = JSON.parse(line.slice(6));
+          if (ev.kind === "text" && typeof ev.text === "string") {
+            assembled += ev.text;
+          } else if (
+            ev.kind === "result" &&
+            !assembled &&
+            typeof ev.final_text === "string"
+          ) {
+            assembled = ev.final_text;
+          }
+        } catch {
+          // ignore malformed SSE line
+        }
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          text: assembled.trim() || dict.chat.skeletonReply,
+        },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: dict.chat.skeletonReply },
+      ]);
+    }
   };
 
   return (
@@ -57,7 +103,7 @@ export default function ChatPage() {
       <Card className="min-h-[420px] flex flex-col justify-between">
         <CardHeader className="border-b border-zinc-800/80 py-3">
           <CardTitle className="text-sm font-medium text-zinc-300">
-            SSE Event Stream · Thinking · Tool Calls
+            {dict.chat.streamCardTitle}
           </CardTitle>
           <CardDescription className="text-xs">
             POST /api/chat (locale={locale})

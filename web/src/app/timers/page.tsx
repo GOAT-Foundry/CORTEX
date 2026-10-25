@@ -26,12 +26,9 @@ export default function TimersPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Clock className="h-4 w-4 text-sky-400" />
-            GET / POST /api/timers · Tool: schedule_timer
+            {dict.timers.cardTitle}
           </CardTitle>
-          <CardDescription>
-            Supports Cron expressions, fixed intervals, and one-shot RFC3339
-            run_at execution.
-          </CardDescription>
+          <CardDescription>{dict.timers.cardSubtitle}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
@@ -39,7 +36,7 @@ export default function TimersPage() {
             <Badge>interval: &quot;15m&quot;</Badge>
             <Badge>schedule: &quot;once&quot; + run_at</Badge>
             <Badge className="border-sky-500/30 bg-sky-500/10 text-sky-300">
-              Agent Tool: schedule_timer
+              {dict.timers.agentToolBadge}
             </Badge>
           </div>
           <p className="text-sm text-zinc-400 pt-2">{dict.timers.empty}</p>

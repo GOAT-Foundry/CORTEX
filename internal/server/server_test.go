@@ -34,7 +34,7 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatalf("health status = %d", rec.Code)
 	}
 
-	// 2. Switch locale to Japanese
+	// 2. Switch locale to Japanese and verify SQLite persistence
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/i18n", bytes.NewBufferString(`{"locale":"ja"}`)))
 	if rec.Code != http.StatusOK {
@@ -42,6 +42,20 @@ func TestServerEndpoints(t *testing.T) {
 	}
 	if i18nMgr.Get() != "ja" {
 		t.Fatalf("expected locale ja, got %s", i18nMgr.Get())
+	}
+
+	// Verify a newly constructed server restores persisted locale from SQLite
+	i18nMgrRestored := i18n.NewManager("en")
+	_ = server.New(cfg, st, i18nMgrRestored, rt)
+	if i18nMgrRestored.Get() != "ja" {
+		t.Fatalf("expected restored server locale ja from SQLite, got %s", i18nMgrRestored.Get())
+	}
+
+	// Reject unsupported locale on PUT /api/i18n
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/i18n", bytes.NewBufferString(`{"locale":"fr"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unsupported locale, got %d", rec.Code)
 	}
 
 	// 3. Collection Put & Get via REST

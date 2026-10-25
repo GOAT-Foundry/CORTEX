@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,11 @@ type Server struct {
 
 // New constructs a configured CORTEX HTTP server.
 func New(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager, rt *agent.Runtime) *Server {
+	if st != nil && i18nMgr != nil {
+		if savedLocale, err := st.GetSetting(context.Background(), "locale"); err == nil && savedLocale != "" {
+			i18nMgr.Set(savedLocale)
+		}
+	}
 	s := &Server{
 		cfg:     cfg,
 		store:   st,
@@ -90,11 +96,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleGetI18n(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleGetI18n(w http.ResponseWriter, r *http.Request) {
+	effective := s.i18n.ResolveLocale(
+		r.URL.Query().Get("locale"),
+		r.Header.Get("X-Cortex-Locale"),
+		"",
+	)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"locale":    s.i18n.Get(),
-		"supported": []string{i18n.LocaleEN, i18n.LocaleJA},
-		"directive": s.i18n.AgentLanguageDirective(""),
+		"locale":          s.i18n.Get(),
+		"effective":       effective,
+		"supported":       []string{i18n.LocaleEN, i18n.LocaleJA},
+		"directive":       s.i18n.AgentLanguageDirective(effective),
+		"system_reminder": s.i18n.SystemReminder(effective),
 	})
 }
 
@@ -106,10 +119,22 @@ func (s *Server) handlePutI18n(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	updated := s.i18n.Set(body.Locale)
+	norm, ok := i18n.ParseStrict(body.Locale)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "unsupported locale (supported: en, ja)")
+		return
+	}
+	if s.store != nil {
+		if err := s.store.SetSetting(r.Context(), "locale", norm); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	updated := s.i18n.Set(norm)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"locale":    updated,
-		"directive": s.i18n.AgentLanguageDirective(updated),
+		"locale":          updated,
+		"directive":       s.i18n.AgentLanguageDirective(updated),
+		"system_reminder": s.i18n.SystemReminder(updated),
 	})
 }
 
@@ -296,7 +321,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	stream, cleanup, err := s.runtime.StreamPrompt(r.Context(), req.Prompt, req.Locale)
+	effectiveLocale := s.i18n.ResolveLocale(
+		req.Locale,
+		r.Header.Get("X-Cortex-Locale"),
+		r.Header.Get("Accept-Language"),
+	)
+	stream, cleanup, err := s.runtime.StreamPrompt(r.Context(), req.Prompt, effectiveLocale)
 	if err != nil {
 		sendSSE(w, flusher, "error", map[string]any{"error": err.Error()})
 		return

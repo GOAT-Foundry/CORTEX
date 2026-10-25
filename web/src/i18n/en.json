@@ -3,8 +3,12 @@
     "title": "CORTEX",
     "subtitle": "AI Agent Application Framework",
     "sdkBadge": "Norma v0.4.5 · MIT License",
+    "singleBinaryBadge": "Single-Binary Ready",
+    "copilotNativeBadge": "GitHub Copilot Native",
     "languageLabel": "Language",
-    "agentSyncNotice": "AI Agent output language is synchronized with UI locale"
+    "agentSyncNotice": "AI Agent output language is synchronized with UI locale",
+    "agentDirectiveTitle": "Active Agent Language Directive",
+    "agentDirectivePreview": "Always respond, explain, and generate reports or artifacts in clear English."
   },
   "nav": {
     "overview": "Overview",
@@ -35,30 +39,62 @@
   "chat": {
     "title": "Standard Agent Chat",
     "subtitle": "Real-time SSE streaming with Thinking & Tool Call visibility",
+    "streamCardTitle": "SSE Event Stream · Thinking · Tool Calls",
     "placeholder": "Ask the CORTEX agent or instruct it to read/write a collection...",
     "send": "Send",
     "agentLabel": "Active Agent",
-    "defaultAgent": "Default General Agent"
+    "defaultAgent": "Default General Agent",
+    "skeletonReply": "[SSE Stream Skeleton] Ready to stream from /api/chat (Norma v0.4.5 Session). Configure an LLM provider in Settings to stream live responses and tool calls."
   },
   "tasks": {
     "title": "Autonomous Task & Graph Execution",
     "subtitle": "Goal Decomposition → Planner ⇄ Worker Parallel Execution → Artifact Generation",
+    "pipelineTitle": "Planner ⇄ Worker Autonomous Pipeline",
+    "pipelineSubtitle": "Norma coordinator & subagent fan-out with artifact synthesis",
     "newGoalPlaceholder": "Describe a high-level goal for autonomous decomposition...",
-    "launchGoal": "Decompose & Run"
+    "launchGoal": "Decompose & Run",
+    "step1Badge": "1. Goal Decomposition",
+    "step1Desc": "Breaks high-level objectives into an executable DAG of subtasks.",
+    "step2Badge": "2. Parallel Workers",
+    "step2Desc": "Dispatches isolated Norma subagents concurrently with tool access.",
+    "step3Badge": "3. Artifacts & Reports",
+    "step3Desc": "Aggregates worker outputs into structured JSON/Markdown artifacts."
   },
   "timers": {
     "title": "Timers & Autonomous Scheduler",
     "subtitle": "Cron expressions, intervals, one-shot run_at jobs, and agent-created timers (schedule_timer)",
+    "cardTitle": "GET / POST /api/timers · Tool: schedule_timer",
+    "cardSubtitle": "Supports Cron expressions, fixed intervals, and one-shot RFC3339 run_at execution.",
+    "agentToolBadge": "Agent Tool: schedule_timer",
     "empty": "No active timers registered yet."
   },
   "collections": {
     "title": "Generic JSON Collection Store",
     "subtitle": "Schema-free persistence shared between Next.js UI (/api/collections/{name}) and AI Agent tools",
-    "sampleCollection": "projects"
+    "cardSubtitle": "Zero-backend-code persistence for domain apps and AI agents",
+    "sampleCollection": "projects",
+    "codeComment": "// Next.js Domain App or AI Agent can read/write directly:"
   },
   "settings": {
     "title": "LLM Providers, GitHub Copilot & Extensibility",
     "subtitle": "Configure GitHub Copilot Device Flow, provider presets, failover, MCP servers, Skills, and Custom Tools",
-    "connectCopilot": "Connect via GitHub Device Flow"
+    "copilotCardTitle": "GitHub Copilot Native & LLM Provider Presets",
+    "copilotCardSubtitle": "Automatic session token exchange, provider failover, and token/cost telemetry",
+    "connectCopilot": "Connect via GitHub Device Flow",
+    "presets": {
+      "copilotName": "GitHub Copilot (Native)",
+      "copilotBadge": "OAuth Device Flow",
+      "openaiName": "OpenAI",
+      "openaiBadge": "API Key",
+      "anthropicName": "Anthropic Claude",
+      "anthropicBadge": "API Key",
+      "othersName": "Google Gemini / OpenRouter / Ollama",
+      "othersEndpoints": "OpenAI Compatible",
+      "othersBadge": "Preset"
+    },
+    "skillsCardTitle": "Skills & MCP Connections",
+    "skillsCardSubtitle": "skills/*/SKILL.md packages & Model Context Protocol servers",
+    "toolsCardTitle": "Custom Tools & Web Search (ddgs)",
+    "toolsCardSubtitle": "Python / Bash / HTTP custom tools and keyless DuckDuckGo search"
   }
 }

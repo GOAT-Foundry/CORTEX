@@ -27,11 +27,9 @@ export default function TasksPage() {
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Network className="h-4 w-4 text-sky-400" />
-            Planner ⇄ Worker Autonomous Pipeline
+            {dict.tasks.pipelineTitle}
           </CardTitle>
-          <CardDescription>
-            Norma coordinator &amp; subagent fan-out with artifact synthesis
-          </CardDescription>
+          <CardDescription>{dict.tasks.pipelineSubtitle}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-2">
@@ -46,24 +44,16 @@ export default function TasksPage() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-              <Badge className="mb-2">1. Goal Decomposition</Badge>
-              <p className="text-xs text-zinc-400">
-                Breaks high-level objectives into an executable DAG of subtasks.
-              </p>
+              <Badge className="mb-2">{dict.tasks.step1Badge}</Badge>
+              <p className="text-xs text-zinc-400">{dict.tasks.step1Desc}</p>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-              <Badge className="mb-2">2. Parallel Workers</Badge>
-              <p className="text-xs text-zinc-400">
-                Dispatches isolated Norma subagents concurrently with tool
-                access.
-              </p>
+              <Badge className="mb-2">{dict.tasks.step2Badge}</Badge>
+              <p className="text-xs text-zinc-400">{dict.tasks.step2Desc}</p>
             </div>
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
-              <Badge className="mb-2">3. Artifacts &amp; Reports</Badge>
-              <p className="text-xs text-zinc-400">
-                Aggregates worker outputs into structured JSON/Markdown
-                artifacts.
-              </p>
+              <Badge className="mb-2">{dict.tasks.step3Badge}</Badge>
+              <p className="text-xs text-zinc-400">{dict.tasks.step3Desc}</p>
             </div>
           </div>
         </CardContent>
