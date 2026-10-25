@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Autumn-27/norma/agentcore"
@@ -14,6 +16,7 @@ import (
 	"github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/skill"
 	"github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/norma/transcript"
 
 	"github.com/GOAT-Foundry/CORTEX/internal/config"
 	"github.com/GOAT-Foundry/CORTEX/internal/i18n"
@@ -29,13 +32,38 @@ func DefaultPresets() []ProviderPreset {
 	return llmhub.DefaultPresets()
 }
 
+// DefaultAgents returns the built-in AI agent personas seeded on startup.
+func DefaultAgents() []store.AgentProfile {
+	return []store.AgentProfile{
+		{
+			ID:           "default",
+			Name:         "CORTEX General Agent",
+			Description:  "Balanced general-purpose agent with access to domain JSON collections, timers, skills, and web tools.",
+			SystemPrompt: "You are CORTEX, a helpful and autonomous general-purpose AI Agent running inside the CORTEX application framework.",
+		},
+		{
+			ID:           "coder",
+			Name:         "Code & Architecture Specialist",
+			Description:  "Focused on clean software architecture, debugging, code generation, and structured technical artifacts.",
+			SystemPrompt: "You are the CORTEX Code & Architecture Specialist. Produce clean, modular, production-grade code and concise technical explanations.",
+		},
+		{
+			ID:           "researcher",
+			Name:         "Deep Research & Domain Analyst",
+			Description:  "Specializes in multi-step investigation, data synthesis, collection querying, and structured report writing.",
+			SystemPrompt: "You are the CORTEX Deep Research & Domain Analyst. Gather evidence methodically, cross-check facts, and organize findings into clear structured reports.",
+		},
+	}
+}
+
 // Runtime coordinates Norma agent sessions, LLM Hub routing, built-in CORTEX tools, and skills.
 type Runtime struct {
-	cfg    config.Config
-	store  *store.Store
-	i18n   *i18n.Manager
-	hub    *llmhub.Hub
-	skills *skill.Registry
+	cfg         config.Config
+	store       *store.Store
+	i18n        *i18n.Manager
+	hub         *llmhub.Hub
+	skills      *skill.Registry
+	transcripts *transcript.Store
 }
 
 // NewRuntime initializes the Norma-backed CORTEX agent runtime.
@@ -46,12 +74,31 @@ func NewRuntime(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager) *Runt
 			skillsReg = reg
 		}
 	}
-	return &Runtime{
-		cfg:    cfg,
-		store:  st,
-		i18n:   i18nMgr,
-		hub:    llmhub.New(st),
-		skills: skillsReg,
+	transcriptDir := filepath.Join(os.TempDir(), "cortex-transcripts")
+	if cfg.DBPath != "" && cfg.DBPath != ":memory:" {
+		transcriptDir = filepath.Join(filepath.Dir(cfg.DBPath), "transcripts")
+	}
+	rt := &Runtime{
+		cfg:         cfg,
+		store:       st,
+		i18n:        i18nMgr,
+		hub:         llmhub.New(st),
+		skills:      skillsReg,
+		transcripts: transcript.NewStore(transcriptDir),
+	}
+	if st != nil {
+		rt.seedDefaultAgents(context.Background())
+	}
+	return rt
+}
+
+func (r *Runtime) seedDefaultAgents(ctx context.Context) {
+	existing, err := r.store.ListAgents(ctx)
+	if err != nil || len(existing) > 0 {
+		return
+	}
+	for _, a := range DefaultAgents() {
+		_, _ = r.store.SaveAgent(ctx, a)
 	}
 }
 
@@ -79,12 +126,55 @@ func (r *Runtime) SkillsList() []map[string]string {
 // NewSession constructs a Norma agentcore.Session equipped with CORTEX domain
 // collection tools, timer scheduling tools, and locale-aware system prompts.
 func (r *Runtime) NewSession(localeOverride string) (*agentcore.Session, error) {
-	return r.NewSessionWithProvider(context.Background(), localeOverride, "", "")
+	return r.NewSessionWithOptions(context.Background(), SessionOptions{
+		Locale: localeOverride,
+	})
+}
+
+// SessionOptions configures a CORTEX agent session.
+type SessionOptions struct {
+	SessionID  string
+	AgentID    string
+	ProviderID string
+	Model      string
+	Locale     string
 }
 
 // NewSessionWithProvider constructs a Norma agentcore.Session routed through the
 // LLM Hub (with failover and token/cost accounting).
 func (r *Runtime) NewSessionWithProvider(ctx context.Context, localeOverride, providerID, modelOverride string) (*agentcore.Session, error) {
+	return r.NewSessionWithOptions(ctx, SessionOptions{
+		ProviderID: providerID,
+		Model:      modelOverride,
+		Locale:     localeOverride,
+	})
+}
+
+// NewSessionWithOptions constructs and optionally resumes a stateful Norma Session.
+func (r *Runtime) NewSessionWithOptions(ctx context.Context, opts SessionOptions) (*agentcore.Session, error) {
+	if opts.SessionID != "" {
+		if err := store.ValidateIdent(opts.SessionID); err != nil {
+			return nil, err
+		}
+	}
+	personaPrompt := "You are CORTEX, an autonomous AI Agent running inside the CORTEX application framework."
+	providerID := strings.TrimSpace(opts.ProviderID)
+	modelOverride := strings.TrimSpace(opts.Model)
+
+	if r.store != nil && opts.AgentID != "" {
+		if ag, err := r.store.GetAgent(ctx, opts.AgentID); err == nil {
+			if strings.TrimSpace(ag.SystemPrompt) != "" {
+				personaPrompt = ag.SystemPrompt
+			}
+			if providerID == "" && ag.ProviderID != "" {
+				providerID = ag.ProviderID
+			}
+			if modelOverride == "" && ag.Model != "" {
+				modelOverride = ag.Model
+			}
+		}
+	}
+
 	var (
 		prov llm.Provider
 		err  error
@@ -104,12 +194,12 @@ func (r *Runtime) NewSessionWithProvider(ctx context.Context, localeOverride, pr
 	tools := append(tool.DefaultTools(), r.cortexTools()...)
 
 	sysPrompt := []string{
-		"You are CORTEX, an autonomous AI Agent running inside the CORTEX application framework.",
+		personaPrompt,
 		"You have access to generic JSON domain collections (collection_list, collection_get, collection_put, collection_delete) and future task scheduling (schedule_timer).",
 		"Always follow the # activeLocale directive in <system-reminder> for your response and artifact language.",
 	}
 
-	sess := agentcore.NewSession(agentcore.Options{
+	acOpts := agentcore.Options{
 		Provider:        prov,
 		SystemPrompt:    sysPrompt,
 		Tools:           tools,
@@ -117,11 +207,33 @@ func (r *Runtime) NewSessionWithProvider(ctx context.Context, localeOverride, pr
 		EnableWebFetch:  true,
 		EnableWebSearch: true,
 		PermissionMode:  permission.ModeAuto,
+		Transcript:      r.transcripts,
+		SessionID:       opts.SessionID,
 		SystemReminderFunc: func() string {
-			return r.i18n.SystemReminder(localeOverride)
+			return r.i18n.SystemReminder(opts.Locale)
 		},
-	})
+	}
+
+	sess := agentcore.NewSession(acOpts)
+	if opts.SessionID != "" && r.transcripts != nil {
+		_ = sess.Resume(opts.SessionID)
+	}
 	return sess, nil
+}
+
+// DeleteSessionTranscript removes the on-disk Norma transcript file for sessionID.
+func (r *Runtime) DeleteSessionTranscript(sessionID string) error {
+	if err := store.ValidateIdent(sessionID); err != nil {
+		return err
+	}
+	if r == nil || r.transcripts == nil {
+		return nil
+	}
+	path := r.transcripts.MainPath(sessionID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // StreamPrompt runs a single prompt through a Norma session and yields harness events.
@@ -132,6 +244,42 @@ func (r *Runtime) StreamPrompt(ctx context.Context, prompt, locale string) (iter
 	}
 	cleanup := func() { _ = sess.Close() }
 	return sess.Prompt(ctx, prompt), cleanup, nil
+}
+
+// ChatTurnInput holds the parameters for a multi-turn chat message execution.
+type ChatTurnInput struct {
+	SessionID   string
+	AgentID     string
+	ProviderID  string
+	Model       string
+	Prompt      string
+	Locale      string
+	Attachments []store.ChatAttachment
+}
+
+// FormatPromptWithAttachments combines the user prompt with any attached text/file blocks.
+func FormatPromptWithAttachments(prompt string, attachments []store.ChatAttachment) string {
+	if len(attachments) == 0 {
+		return prompt
+	}
+	var b strings.Builder
+	b.WriteString(prompt)
+	b.WriteString("\n\n<attachments>\n")
+	for _, att := range attachments {
+		safeName := filepath.Base(att.Name)
+		b.WriteString(fmt.Sprintf("<attachment name=%q media_type=%q size_bytes=\"%d\">\n", safeName, att.MediaType, att.SizeBytes))
+		content := att.Content
+		if len(content) > 32000 {
+			content = content[:32000] + "\n...[truncated]"
+		}
+		b.WriteString(content)
+		if !strings.HasSuffix(content, "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("</attachment>\n")
+	}
+	b.WriteString("</attachments>")
+	return b.String()
 }
 
 func (r *Runtime) cortexTools() []tool.CoreTool {

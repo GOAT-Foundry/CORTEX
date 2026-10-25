@@ -132,7 +132,7 @@ go build -o cortex ./cmd/cortex
 
 - [x] **i18n Foundation**: Full UI (`en.json` / `ja.json`) and AI agent output language synchronization
 - [x] **LLM Provider Hub & GitHub Copilot Native Integration**: OAuth Device Flow, automatic token exchange, `/chat/completions`, `/responses`, `/v1/messages`, failover, and token/cost telemetry
-- [ ] **Standard Streaming Chat (`/chat`)**: Multi-turn chat persistence, agent switcher, SSE streaming (thinking & tool calls), and file attachments
+- [x] **Standard Streaming Chat (`/chat`)**: Multi-turn chat persistence, agent switcher, SSE streaming (thinking & tool calls), and file attachments
 - [ ] **Autonomous Task & Graph Execution (`/tasks`)**: Goal decomposition, parallel Planner ⇄ Worker execution, and artifact/report generation
 - [ ] **Timers & Scheduler (`/timers`)**: Cron/interval schedules, one-shot `run_at` jobs, and the `schedule_timer` agent tool
 - [ ] **Extensibility Suite**: Agent/Prompt studio, Skills (`skills/`), MCP client manager, Custom Tools (Python/Bash/HTTP), and Web Search (`ddgs`)
