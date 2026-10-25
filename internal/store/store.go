@@ -99,6 +99,60 @@ type UsageSummary struct {
 	Recent           []UsageLogEntry          `json:"recent"`
 }
 
+// AgentProfile defines a reusable AI agent persona with its own system prompt and model preference.
+type AgentProfile struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description"`
+	SystemPrompt string    `json:"system_prompt"`
+	ProviderID   string    `json:"provider_id"`
+	Model        string    `json:"model"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// ChatSession represents a persistent multi-turn conversation thread.
+type ChatSession struct {
+	ID         string    `json:"id"`
+	Title      string    `json:"title"`
+	AgentID    string    `json:"agent_id"`
+	ProviderID string    `json:"provider_id"`
+	Model      string    `json:"model"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// ChatToolCall records a single tool invocation and its outcome within an assistant turn.
+type ChatToolCall struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Input   string `json:"input,omitempty"`
+	Output  string `json:"output,omitempty"`
+	IsError bool   `json:"is_error,omitempty"`
+}
+
+// ChatAttachment represents a file or image attached to a user message.
+type ChatAttachment struct {
+	Name      string `json:"name"`
+	MediaType string `json:"media_type"`
+	Content   string `json:"content"` // UTF-8 text content or base64 data URI
+	SizeBytes int    `json:"size_bytes,omitempty"`
+}
+
+// ChatMessage represents one user or assistant message in a ChatSession.
+type ChatMessage struct {
+	ID           int64            `json:"id"`
+	SessionID    string           `json:"session_id"`
+	Role         string           `json:"role"` // "user" | "assistant"
+	Content      string           `json:"content"`
+	Thinking     string           `json:"thinking,omitempty"`
+	ToolCalls    []ChatToolCall   `json:"tool_calls,omitempty"`
+	Attachments  []ChatAttachment `json:"attachments,omitempty"`
+	InputTokens  int              `json:"input_tokens,omitempty"`
+	OutputTokens int              `json:"output_tokens,omitempty"`
+	CreatedAt    time.Time        `json:"created_at"`
+}
+
 // Store wraps SQLite persistence for CORTEX collections, timers, and settings.
 type Store struct {
 	db *sql.DB
@@ -200,6 +254,45 @@ func (s *Store) migrate() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_usage_logs_created ON usage_logs(created_at DESC);
+
+	CREATE TABLE IF NOT EXISTS agents (
+		id            TEXT PRIMARY KEY,
+		name          TEXT NOT NULL,
+		description   TEXT NOT NULL DEFAULT '',
+		system_prompt TEXT NOT NULL,
+		provider_id   TEXT NOT NULL DEFAULT '',
+		model         TEXT NOT NULL DEFAULT '',
+		created_at    DATETIME NOT NULL,
+		updated_at    DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS chat_sessions (
+		id          TEXT PRIMARY KEY,
+		title       TEXT NOT NULL,
+		agent_id    TEXT NOT NULL DEFAULT 'default',
+		provider_id TEXT NOT NULL DEFAULT '',
+		model       TEXT NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL,
+		updated_at  DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at DESC);
+
+	CREATE TABLE IF NOT EXISTS chat_messages (
+		id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id       TEXT NOT NULL,
+		role             TEXT NOT NULL,
+		content          TEXT NOT NULL,
+		thinking         TEXT NOT NULL DEFAULT '',
+		tool_calls_json  TEXT NOT NULL DEFAULT '[]',
+		attachments_json TEXT NOT NULL DEFAULT '[]',
+		input_tokens     INTEGER NOT NULL DEFAULT 0,
+		output_tokens    INTEGER NOT NULL DEFAULT 0,
+		created_at       DATETIME NOT NULL,
+		FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id ASC);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -635,5 +728,231 @@ func (s *Store) GetUsageSummary(ctx context.Context, limitRecent int) (UsageSumm
 		sum.Recent = append(sum.Recent, e)
 	}
 	return sum, rRows.Err()
+}
+
+// ListAgents returns all registered agent profiles ordered by id ASC.
+func (s *Store) ListAgents(ctx context.Context) ([]AgentProfile, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, description, system_prompt, provider_id, model, created_at, updated_at
+		FROM agents
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []AgentProfile{}
+	for rows.Next() {
+		var a AgentProfile
+		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.SystemPrompt, &a.ProviderID, &a.Model, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// GetAgent fetches a single agent profile by ID.
+func (s *Store) GetAgent(ctx context.Context, id string) (AgentProfile, error) {
+	if err := ValidateIdent(id); err != nil {
+		return AgentProfile{}, err
+	}
+	var a AgentProfile
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, description, system_prompt, provider_id, model, created_at, updated_at
+		FROM agents
+		WHERE id = ?
+	`, id).Scan(&a.ID, &a.Name, &a.Description, &a.SystemPrompt, &a.ProviderID, &a.Model, &a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentProfile{}, ErrNotFound
+	}
+	return a, err
+}
+
+// SaveAgent creates or updates an agent profile.
+func (s *Store) SaveAgent(ctx context.Context, a AgentProfile) (AgentProfile, error) {
+	if err := ValidateIdent(a.ID); err != nil {
+		return AgentProfile{}, err
+	}
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	a.UpdatedAt = now
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO agents (id, name, description, system_prompt, provider_id, model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			description = excluded.description,
+			system_prompt = excluded.system_prompt,
+			provider_id = excluded.provider_id,
+			model = excluded.model,
+			updated_at = excluded.updated_at
+	`, a.ID, a.Name, a.Description, a.SystemPrompt, a.ProviderID, a.Model, a.CreatedAt, a.UpdatedAt)
+	if err != nil {
+		return AgentProfile{}, err
+	}
+	return s.GetAgent(ctx, a.ID)
+}
+
+// ListChatSessions returns all chat sessions ordered by most recently updated.
+func (s *Store) ListChatSessions(ctx context.Context) ([]ChatSession, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, title, agent_id, provider_id, model, created_at, updated_at
+		FROM chat_sessions
+		ORDER BY updated_at DESC, created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ChatSession{}
+	for rows.Next() {
+		var cs ChatSession
+		if err := rows.Scan(&cs.ID, &cs.Title, &cs.AgentID, &cs.ProviderID, &cs.Model, &cs.CreatedAt, &cs.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, cs)
+	}
+	return out, rows.Err()
+}
+
+// GetChatSession retrieves a single chat session by ID.
+func (s *Store) GetChatSession(ctx context.Context, id string) (ChatSession, error) {
+	if err := ValidateIdent(id); err != nil {
+		return ChatSession{}, err
+	}
+	var cs ChatSession
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, title, agent_id, provider_id, model, created_at, updated_at
+		FROM chat_sessions
+		WHERE id = ?
+	`, id).Scan(&cs.ID, &cs.Title, &cs.AgentID, &cs.ProviderID, &cs.Model, &cs.CreatedAt, &cs.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatSession{}, ErrNotFound
+	}
+	return cs, err
+}
+
+// SaveChatSession creates or updates a chat session.
+func (s *Store) SaveChatSession(ctx context.Context, cs ChatSession) (ChatSession, error) {
+	if err := ValidateIdent(cs.ID); err != nil {
+		return ChatSession{}, err
+	}
+	now := time.Now().UTC()
+	if cs.CreatedAt.IsZero() {
+		cs.CreatedAt = now
+	}
+	cs.UpdatedAt = now
+	if cs.AgentID == "" {
+		cs.AgentID = "default"
+	}
+	if cs.Title == "" {
+		cs.Title = "New Chat"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO chat_sessions (id, title, agent_id, provider_id, model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			agent_id = excluded.agent_id,
+			provider_id = excluded.provider_id,
+			model = excluded.model,
+			updated_at = excluded.updated_at
+	`, cs.ID, cs.Title, cs.AgentID, cs.ProviderID, cs.Model, cs.CreatedAt, cs.UpdatedAt)
+	if err != nil {
+		return ChatSession{}, err
+	}
+	return s.GetChatSession(ctx, cs.ID)
+}
+
+// DeleteChatSession deletes a chat session and its messages.
+func (s *Store) DeleteChatSession(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM chat_messages WHERE session_id = ?`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_sessions WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// AppendChatMessage appends a message to a chat session and updates the session's updated_at timestamp.
+func (s *Store) AppendChatMessage(ctx context.Context, m ChatMessage) (ChatMessage, error) {
+	if err := ValidateIdent(m.SessionID); err != nil {
+		return ChatMessage{}, err
+	}
+	now := time.Now().UTC()
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	tcJSON := "[]"
+	if len(m.ToolCalls) > 0 {
+		if b, err := json.Marshal(m.ToolCalls); err == nil {
+			tcJSON = string(b)
+		}
+	}
+	attJSON := "[]"
+	if len(m.Attachments) > 0 {
+		if b, err := json.Marshal(m.Attachments); err == nil {
+			attJSON = string(b)
+		}
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO chat_messages (
+			session_id, role, content, thinking, tool_calls_json, attachments_json,
+			input_tokens, output_tokens, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, m.SessionID, m.Role, m.Content, m.Thinking, tcJSON, attJSON, m.InputTokens, m.OutputTokens, m.CreatedAt)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	id, _ := res.LastInsertId()
+	m.ID = id
+	_, _ = s.db.ExecContext(ctx, `UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, now, m.SessionID)
+	return m, nil
+}
+
+// ListChatMessages returns all messages for a chat session ordered chronologically.
+func (s *Store) ListChatMessages(ctx context.Context, sessionID string) ([]ChatMessage, error) {
+	if err := ValidateIdent(sessionID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, role, content, thinking, tool_calls_json, attachments_json,
+		       input_tokens, output_tokens, created_at
+		FROM chat_messages
+		WHERE session_id = ?
+		ORDER BY id ASC
+	`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ChatMessage{}
+	for rows.Next() {
+		var m ChatMessage
+		var tcRaw, attRaw string
+		if err := rows.Scan(
+			&m.ID, &m.SessionID, &m.Role, &m.Content, &m.Thinking,
+			&tcRaw, &attRaw, &m.InputTokens, &m.OutputTokens, &m.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(tcRaw), &m.ToolCalls)
+		_ = json.Unmarshal([]byte(attRaw), &m.Attachments)
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 

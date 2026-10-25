@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/norma/harness"
@@ -20,11 +21,13 @@ import (
 
 // Server wires HTTP routes for REST APIs, SSE agent streams, and the embedded Next.js UI.
 type Server struct {
-	cfg     config.Config
-	store   *store.Store
-	i18n    *i18n.Manager
-	runtime *agent.Runtime
-	mux     *http.ServeMux
+	cfg            config.Config
+	store          *store.Store
+	i18n           *i18n.Manager
+	runtime        *agent.Runtime
+	mux            *http.ServeMux
+	sessionMu      sync.Mutex
+	activeSessions map[string]bool
 }
 
 // New constructs a configured CORTEX HTTP server.
@@ -35,11 +38,12 @@ func New(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager, rt *agent.Ru
 		}
 	}
 	s := &Server{
-		cfg:     cfg,
-		store:   st,
-		i18n:    i18nMgr,
-		runtime: rt,
-		mux:     http.NewServeMux(),
+		cfg:            cfg,
+		store:          st,
+		i18n:           i18nMgr,
+		runtime:        rt,
+		mux:            http.NewServeMux(),
+		activeSessions: map[string]bool{},
 	}
 	s.registerRoutes()
 	return s
@@ -85,7 +89,19 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/timers", s.handleListTimers)
 	s.mux.HandleFunc("POST /api/timers", s.handleCreateTimer)
 
-	// Chat SSE endpoint
+	// Agents & Chat Session Management API
+	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
+	s.mux.HandleFunc("POST /api/agents", s.handleSaveAgent)
+	s.mux.HandleFunc("PUT /api/agents/{id}", s.handleSaveAgent)
+
+	s.mux.HandleFunc("GET /api/chat/sessions", s.handleListChatSessions)
+	s.mux.HandleFunc("POST /api/chat/sessions", s.handleCreateChatSession)
+	s.mux.HandleFunc("GET /api/chat/sessions/{id}", s.handleGetChatSession)
+	s.mux.HandleFunc("PUT /api/chat/sessions/{id}", s.handleUpdateChatSession)
+	s.mux.HandleFunc("DELETE /api/chat/sessions/{id}", s.handleDeleteChatSession)
+	s.mux.HandleFunc("POST /api/chat/sessions/{id}/messages", s.handleSessionChat)
+
+	// Chat SSE endpoint (supports both session_id in body and standalone calls)
 	s.mux.HandleFunc("POST /api/chat", s.handleChat)
 
 	// Embedded Next.js Static UI fallback
@@ -455,15 +471,237 @@ func (s *Server) handleCreateTimer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, saved)
 }
 
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Prompt string `json:"prompt"`
-		Locale string `json:"locale"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "prompt is required")
+func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"agents": agent.DefaultAgents()})
 		return
 	}
+	agents, err := s.store.ListAgents(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"agents": agents})
+}
+
+func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var in store.AgentProfile
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if pathID := r.PathValue("id"); pathID != "" {
+		in.ID = pathID
+	}
+	if in.ID == "" {
+		in.ID = fmt.Sprintf("agent-%d", time.Now().UTC().UnixNano())
+	}
+	if in.Name == "" || in.SystemPrompt == "" {
+		writeError(w, http.StatusBadRequest, "name and system_prompt are required")
+		return
+	}
+	saved, err := s.store.SaveAgent(r.Context(), in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleListChatSessions(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": []store.ChatSession{}})
+		return
+	}
+	sessions, err := s.store.ListChatSessions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+func (s *Server) handleCreateChatSession(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	var in store.ChatSession
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	if in.ID == "" {
+		in.ID = fmt.Sprintf("chat-%d", time.Now().UTC().UnixNano())
+	}
+	if in.Title == "" {
+		in.Title = "New Chat"
+	}
+	if in.AgentID == "" {
+		in.AgentID = "default"
+	}
+	saved, err := s.store.SaveChatSession(r.Context(), in)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, saved)
+}
+
+func (s *Server) handleGetChatSession(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	cs, err := s.store.GetChatSession(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	msgs, err := s.store.ListChatMessages(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session":  cs,
+		"messages": msgs,
+	})
+}
+
+func (s *Server) handleUpdateChatSession(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	existing, err := s.store.GetChatSession(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var patch struct {
+		Title      *string `json:"title"`
+		AgentID    *string `json:"agent_id"`
+		ProviderID *string `json:"provider_id"`
+		Model      *string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if patch.Title != nil && *patch.Title != "" {
+		existing.Title = *patch.Title
+	}
+	if patch.AgentID != nil && *patch.AgentID != "" {
+		existing.AgentID = *patch.AgentID
+	}
+	if patch.ProviderID != nil {
+		existing.ProviderID = *patch.ProviderID
+	}
+	if patch.Model != nil {
+		existing.Model = *patch.Model
+	}
+	saved, err := s.store.SaveChatSession(r.Context(), existing)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleDeleteChatSession(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteChatSession(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.runtime != nil {
+		_ = s.runtime.DeleteSessionTranscript(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+func (s *Server) acquireSessionTurn(sessionID string) bool {
+	if sessionID == "" {
+		return true
+	}
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.activeSessions[sessionID] {
+		return false
+	}
+	s.activeSessions[sessionID] = true
+	return true
+}
+
+func (s *Server) releaseSessionTurn(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.sessionMu.Lock()
+	delete(s.activeSessions, sessionID)
+	s.sessionMu.Unlock()
+}
+
+func (s *Server) handleSessionChat(w http.ResponseWriter, r *http.Request) {
+	s.streamChatTurn(w, r, r.PathValue("id"))
+}
+
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
+	s.streamChatTurn(w, r, "")
+}
+
+func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSessionID string) {
+	var req struct {
+		SessionID   string                 `json:"session_id"`
+		AgentID     string                 `json:"agent_id"`
+		ProviderID  string                 `json:"provider_id"`
+		Model       string                 `json:"model"`
+		Prompt      string                 `json:"prompt"`
+		Locale      string                 `json:"locale"`
+		Attachments []store.ChatAttachment `json:"attachments"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<20)).Decode(&req); err != nil || (req.Prompt == "" && len(req.Attachments) == 0) {
+		writeError(w, http.StatusBadRequest, "prompt or attachment is required")
+		return
+	}
+	if pathSessionID != "" {
+		req.SessionID = pathSessionID
+	}
+
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("chat-%d", time.Now().UTC().UnixNano())
+	}
+	if err := store.ValidateIdent(sessionID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if !s.acquireSessionTurn(sessionID) {
+		writeError(w, http.StatusConflict, "session already has an active turn in progress")
+		return
+	}
+	defer s.releaseSessionTurn(sessionID)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -471,40 +709,181 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	effectiveLocale := s.i18n.ResolveLocale(
 		req.Locale,
 		r.Header.Get("X-Cortex-Locale"),
 		r.Header.Get("Accept-Language"),
 	)
-	stream, cleanup, err := s.runtime.StreamPrompt(r.Context(), req.Prompt, effectiveLocale)
+
+	agentID := req.AgentID
+	providerID := req.ProviderID
+	model := req.Model
+
+	if s.store != nil {
+		cs, err := s.store.GetChatSession(r.Context(), sessionID)
+		if err != nil {
+			title := req.Prompt
+			if len([]rune(title)) > 36 {
+				title = string([]rune(title)[:36]) + "…"
+			}
+			if title == "" {
+				title = "New Chat"
+			}
+			if agentID == "" {
+				agentID = "default"
+			}
+			cs, err = s.store.SaveChatSession(r.Context(), store.ChatSession{
+				ID:         sessionID,
+				Title:      title,
+				AgentID:    agentID,
+				ProviderID: providerID,
+				Model:      model,
+			})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		} else {
+			if (cs.Title == "New Chat" || cs.Title == "新規チャット") && req.Prompt != "" {
+				title := req.Prompt
+				if len([]rune(title)) > 36 {
+					title = string([]rune(title)[:36]) + "…"
+				}
+				cs.Title = title
+				_, _ = s.store.SaveChatSession(r.Context(), cs)
+			}
+			if agentID == "" {
+				agentID = cs.AgentID
+			}
+			if providerID == "" {
+				providerID = cs.ProviderID
+			}
+			if model == "" {
+				model = cs.Model
+			}
+		}
+
+		if _, err := s.store.AppendChatMessage(r.Context(), store.ChatMessage{
+			SessionID:   sessionID,
+			Role:        "user",
+			Content:     req.Prompt,
+			Attachments: req.Attachments,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	if sessionID != "" {
+		sendSSE(w, flusher, "session", map[string]any{
+			"session_id": sessionID,
+			"agent_id":   agentID,
+		})
+	}
+
+	sess, err := s.runtime.NewSessionWithOptions(r.Context(), agent.SessionOptions{
+		SessionID:  sessionID,
+		AgentID:    agentID,
+		ProviderID: providerID,
+		Model:      model,
+		Locale:     effectiveLocale,
+	})
 	if err != nil {
 		sendSSE(w, flusher, "error", map[string]any{"error": err.Error()})
 		return
 	}
-	defer cleanup()
+	defer sess.Close()
 
-	for ev, err := range stream {
+	fullPrompt := agent.FormatPromptWithAttachments(req.Prompt, req.Attachments)
+
+	var (
+		assembledText     string
+		assembledThinking string
+		toolCalls         []store.ChatToolCall
+		inputTokens       int
+		outputTokens      int
+	)
+
+	for ev, err := range sess.Prompt(r.Context(), fullPrompt) {
 		if err != nil {
 			sendSSE(w, flusher, "error", map[string]any{"error": err.Error()})
-			return
+			break
 		}
 		payload := map[string]any{
 			"kind": string(ev.Kind),
 			"text": ev.Text,
 		}
-		if ev.Kind == harness.KindToolUse && ev.ToolUse != nil {
-			payload["tool_name"] = ev.ToolUse.Name
-			payload["tool_id"] = ev.ToolUse.ID
-		}
-		if ev.Kind == harness.KindResult && ev.Terminal != nil {
-			payload["reason"] = string(ev.Terminal.Reason)
-			payload["final_text"] = ev.Terminal.Text
+		switch ev.Kind {
+		case harness.KindText:
+			assembledText += ev.Text
+		case harness.KindThinking:
+			assembledThinking += ev.Text
+		case harness.KindToolUse:
+			if ev.ToolUse != nil {
+				inStr := string(ev.ToolUse.Input)
+				payload["tool_id"] = ev.ToolUse.ID
+				payload["tool_name"] = ev.ToolUse.Name
+				payload["input"] = inStr
+				toolCalls = append(toolCalls, store.ChatToolCall{
+					ID:    ev.ToolUse.ID,
+					Name:  ev.ToolUse.Name,
+					Input: inStr,
+				})
+			}
+		case harness.KindToolResult:
+			if ev.ToolResult != nil {
+				var outText string
+				for _, b := range ev.ToolResult.Content {
+					outText += b.Text
+				}
+				payload["tool_id"] = ev.ToolResult.ToolUseID
+				payload["output"] = outText
+				payload["is_error"] = ev.ToolResult.IsError
+				for i := range toolCalls {
+					if toolCalls[i].ID == ev.ToolResult.ToolUseID {
+						toolCalls[i].Output = outText
+						toolCalls[i].IsError = ev.ToolResult.IsError
+						break
+					}
+				}
+			}
+		case harness.KindUsage:
+			if ev.Usage != nil {
+				inputTokens = ev.Usage.InputTokens
+				outputTokens = ev.Usage.OutputTokens
+				payload["input_tokens"] = inputTokens
+				payload["output_tokens"] = outputTokens
+			}
+		case harness.KindResult:
+			if ev.Terminal != nil {
+				payload["reason"] = string(ev.Terminal.Reason)
+				payload["final_text"] = ev.Terminal.Text
+				if assembledText == "" && ev.Terminal.Text != "" {
+					assembledText = ev.Terminal.Text
+				}
+				if ev.Terminal.Usage.InputTokens > 0 || ev.Terminal.Usage.OutputTokens > 0 {
+					inputTokens = ev.Terminal.Usage.InputTokens
+					outputTokens = ev.Terminal.Usage.OutputTokens
+				}
+			}
 		}
 		sendSSE(w, flusher, string(ev.Kind), payload)
+	}
+
+	if s.store != nil && sessionID != "" && (assembledText != "" || assembledThinking != "" || len(toolCalls) > 0) {
+		_, _ = s.store.AppendChatMessage(context.Background(), store.ChatMessage{
+			SessionID:    sessionID,
+			Role:         "assistant",
+			Content:      assembledText,
+			Thinking:     assembledThinking,
+			ToolCalls:    toolCalls,
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+		})
 	}
 }
 

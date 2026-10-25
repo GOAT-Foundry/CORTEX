@@ -133,7 +133,7 @@ go build -o cortex ./cmd/cortex
 
 - [x] **多言語対応 (i18n) 基盤**: UI の日英切り替え（`en.json` / `ja.json`）および AI エージェントの出力言語連動
 - [x] **LLM 設定・GitHub Copilot ネイティブ統合**: OAuth デバイスフロー認証、セッショントークン自動交換、`/chat/completions`・`/responses`・`/v1/messages` 対応、フェイルオーバー、トークン/コスト集計
-- [ ] **標準チャット機能 (`/chat`)**: エージェント切替、マルチターン会話履歴、SSE リアルタイムストリーミング（Thinking・ツール呼び出し表示）、ファイル添付
+- [x] **標準チャット機能 (`/chat`)**: エージェント切替、マルチターン会話履歴、SSE リアルタイムストリーミング（Thinking・ツール呼び出し表示）、ファイル添付
 - [ ] **自律タスク & グラフ実行 (`/tasks`)**: Goal 分解 → Planner ⇄ Worker 並列実行 → 汎用成果物（Artifact）＆レポート生成
 - [ ] **タイマー・スケジューラ機能 (`/timers`)**: 定期実行（Cron / 間隔）、日時指定ワンショット予約（`run_at`）、およびエージェント自身の予約ツール（`schedule_timer`）
 - [ ] **拡張機能スイート**: エージェント/プロンプト管理、スキル（`skills/`）、MCP 接続、カスタムツール（Python/Bash/HTTP）、Web 検索（`ddgs`）

@@ -108,4 +108,75 @@ func TestServerEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("usage get status = %d", rec.Code)
 	}
+
+	// 5. Agents & Multi-turn Chat Sessions CRUD + SSE with mock LLM provider
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Analyzing attachment...\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello from CORTEX chat!\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":12}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer mockLLM.Close()
+
+	// Point primary openai provider to mockLLM
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/providers/openai", bytes.NewBufferString(`{"name":"OpenAI","format":"openai","base_url":"`+mockLLM.URL+`","api_key":"sk-test-1234567890","default_model":"gpt-4o","auth_type":"api_key","enabled":true,"priority":1}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configure mock LLM status = %d", rec.Code)
+	}
+
+	// List seeded agents
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agents list status = %d", rec.Code)
+	}
+
+	// Create chat session
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat/sessions", bytes.NewBufferString(`{"id":"sess-test-1","title":"New Chat","agent_id":"coder"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create chat session status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Send message with attachment over SSE
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodPost,
+		"/api/chat/sessions/sess-test-1/messages",
+		bytes.NewBufferString(`{"prompt":"Review this file","provider_id":"openai","attachments":[{"name":"spec.md","media_type":"text/markdown","content":"# Spec","size_bytes":6}]}`),
+	))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("session chat status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("Hello from CORTEX chat!")) {
+		t.Fatalf("expected streamed assistant text in SSE body, got: %s", rec.Body.String())
+	}
+
+	// Fetch session history and verify both user and assistant messages were persisted
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chat/sessions/sess-test-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get chat session status = %d", rec.Code)
+	}
+	var sessionDetail struct {
+		Session  store.ChatSession   `json:"session"`
+		Messages []store.ChatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessionDetail); err != nil {
+		t.Fatalf("decode session detail: %v", err)
+	}
+	if len(sessionDetail.Messages) != 2 {
+		t.Fatalf("expected 2 persisted messages, got %d", len(sessionDetail.Messages))
+	}
+	if sessionDetail.Messages[1].Thinking != "Analyzing attachment..." {
+		t.Fatalf("expected persisted thinking block, got %q", sessionDetail.Messages[1].Thinking)
+	}
+
+	// Delete chat session
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/chat/sessions/sess-test-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete chat session status = %d", rec.Code)
+	}
 }
