@@ -46,6 +46,59 @@ type TimerEntry struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// ProviderConfig stores a configured LLM provider profile and failover priority.
+type ProviderConfig struct {
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Format          string    `json:"format"` // "openai", "openai-responses", "anthropic"
+	BaseURL         string    `json:"base_url"`
+	APIKey          string    `json:"api_key,omitempty"`
+	HasAPIKey       bool      `json:"has_api_key"`
+	DefaultModel    string    `json:"default_model"`
+	AuthType        string    `json:"auth_type"` // "copilot_device_flow", "api_key", "none"
+	Enabled         bool      `json:"enabled"`
+	Priority        int       `json:"priority"` // 1 = primary, 2+ = fallback order
+	InputCostPer1M  float64   `json:"input_cost_per_1m"`
+	OutputCostPer1M float64   `json:"output_cost_per_1m"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// UsageLogEntry represents a single model invocation's token and cost telemetry.
+type UsageLogEntry struct {
+	ID               int64     `json:"id"`
+	ProviderID       string    `json:"provider_id"`
+	Model            string    `json:"model"`
+	WireFormat       string    `json:"wire_format"`
+	InputTokens      int       `json:"input_tokens"`
+	OutputTokens     int       `json:"output_tokens"`
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	CostUSD          float64   `json:"cost_usd"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// ProviderUsageBreakdown summarizes telemetry grouped by provider and model.
+type ProviderUsageBreakdown struct {
+	ProviderID   string  `json:"provider_id"`
+	Model        string  `json:"model"`
+	Calls        int     `json:"calls"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// UsageSummary aggregates overall and per-provider token/cost statistics.
+type UsageSummary struct {
+	TotalCalls       int                      `json:"total_calls"`
+	InputTokens      int                      `json:"input_tokens"`
+	OutputTokens     int                      `json:"output_tokens"`
+	CacheReadTokens  int                      `json:"cache_read_tokens"`
+	CacheWriteTokens int                      `json:"cache_write_tokens"`
+	TotalCostUSD     float64                  `json:"total_cost_usd"`
+	ByProvider       []ProviderUsageBreakdown `json:"by_provider"`
+	Recent           []UsageLogEntry          `json:"recent"`
+}
+
 // Store wraps SQLite persistence for CORTEX collections, timers, and settings.
 type Store struct {
 	db *sql.DB
@@ -117,6 +170,36 @@ func (s *Store) migrate() error {
 		value      TEXT NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS provider_configs (
+		id                 TEXT PRIMARY KEY,
+		name               TEXT NOT NULL,
+		format             TEXT NOT NULL,
+		base_url           TEXT NOT NULL,
+		api_key            TEXT NOT NULL DEFAULT '',
+		default_model      TEXT NOT NULL,
+		auth_type          TEXT NOT NULL DEFAULT 'api_key',
+		enabled            INTEGER NOT NULL DEFAULT 1,
+		priority           INTEGER NOT NULL DEFAULT 10,
+		input_cost_per_1m  REAL NOT NULL DEFAULT 0,
+		output_cost_per_1m REAL NOT NULL DEFAULT 0,
+		updated_at         DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS usage_logs (
+		id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+		provider_id        TEXT NOT NULL,
+		model              TEXT NOT NULL,
+		wire_format        TEXT NOT NULL,
+		input_tokens       INTEGER NOT NULL DEFAULT 0,
+		output_tokens      INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+		cost_usd           REAL NOT NULL DEFAULT 0,
+		created_at         DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_usage_logs_created ON usage_logs(created_at DESC);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -333,5 +416,224 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 			updated_at = excluded.updated_at
 	`, key, value, now)
 	return err
+}
+
+// DeleteSetting removes a key from the settings table.
+func (s *Store) DeleteSetting(ctx context.Context, key string) error {
+	if err := ValidateIdent(key); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key)
+	return err
+}
+
+// ListProviderConfigs returns all provider configurations ordered by priority ASC, id ASC.
+func (s *Store) ListProviderConfigs(ctx context.Context) ([]ProviderConfig, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, format, base_url, api_key, default_model, auth_type,
+		       enabled, priority, input_cost_per_1m, output_cost_per_1m, updated_at
+		FROM provider_configs
+		ORDER BY priority ASC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ProviderConfig{}
+	for rows.Next() {
+		var p ProviderConfig
+		var enabled int
+		if err := rows.Scan(
+			&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.AuthType,
+			&enabled, &p.Priority, &p.InputCostPer1M, &p.OutputCostPer1M, &p.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		p.Enabled = enabled != 0
+		p.HasAPIKey = p.APIKey != ""
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetProviderConfig retrieves a single provider configuration by ID.
+func (s *Store) GetProviderConfig(ctx context.Context, id string) (ProviderConfig, error) {
+	if err := ValidateIdent(id); err != nil {
+		return ProviderConfig{}, err
+	}
+	var p ProviderConfig
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, format, base_url, api_key, default_model, auth_type,
+		       enabled, priority, input_cost_per_1m, output_cost_per_1m, updated_at
+		FROM provider_configs
+		WHERE id = ?
+	`, id).Scan(
+		&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.APIKey, &p.DefaultModel, &p.AuthType,
+		&enabled, &p.Priority, &p.InputCostPer1M, &p.OutputCostPer1M, &p.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProviderConfig{}, ErrNotFound
+	}
+	if err != nil {
+		return ProviderConfig{}, err
+	}
+	p.Enabled = enabled != 0
+	p.HasAPIKey = p.APIKey != ""
+	return p, nil
+}
+
+// SaveProviderConfig inserts or updates a provider configuration.
+// If p.APIKey is empty and a record already exists, the existing api_key is preserved
+// unless clearAPIKey is true.
+func (s *Store) SaveProviderConfig(ctx context.Context, p ProviderConfig, clearAPIKey bool) (ProviderConfig, error) {
+	if err := ValidateIdent(p.ID); err != nil {
+		return ProviderConfig{}, err
+	}
+	if !clearAPIKey && p.APIKey == "" {
+		if existing, err := s.GetProviderConfig(ctx, p.ID); err == nil {
+			p.APIKey = existing.APIKey
+		}
+	}
+	now := time.Now().UTC()
+	p.UpdatedAt = now
+	enabled := 0
+	if p.Enabled {
+		enabled = 1
+	}
+	if p.Priority <= 0 {
+		p.Priority = 10
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO provider_configs (
+			id, name, format, base_url, api_key, default_model, auth_type,
+			enabled, priority, input_cost_per_1m, output_cost_per_1m, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			format = excluded.format,
+			base_url = excluded.base_url,
+			api_key = excluded.api_key,
+			default_model = excluded.default_model,
+			auth_type = excluded.auth_type,
+			enabled = excluded.enabled,
+			priority = excluded.priority,
+			input_cost_per_1m = excluded.input_cost_per_1m,
+			output_cost_per_1m = excluded.output_cost_per_1m,
+			updated_at = excluded.updated_at
+	`,
+		p.ID, p.Name, p.Format, p.BaseURL, p.APIKey, p.DefaultModel, p.AuthType,
+		enabled, p.Priority, p.InputCostPer1M, p.OutputCostPer1M, p.UpdatedAt,
+	)
+	if err != nil {
+		return ProviderConfig{}, err
+	}
+	return s.GetProviderConfig(ctx, p.ID)
+}
+
+// RecordUsage appends a token/cost telemetry entry to usage_logs.
+func (s *Store) RecordUsage(ctx context.Context, entry UsageLogEntry) (UsageLogEntry, error) {
+	now := time.Now().UTC()
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = now
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO usage_logs (
+			provider_id, model, wire_format,
+			input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			cost_usd, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		entry.ProviderID, entry.Model, entry.WireFormat,
+		entry.InputTokens, entry.OutputTokens, entry.CacheReadTokens, entry.CacheWriteTokens,
+		entry.CostUSD, entry.CreatedAt,
+	)
+	if err != nil {
+		return UsageLogEntry{}, err
+	}
+	id, _ := res.LastInsertId()
+	entry.ID = id
+	return entry, nil
+}
+
+// GetUsageSummary aggregates total and per-provider token/cost usage and returns recent logs.
+func (s *Store) GetUsageSummary(ctx context.Context, limitRecent int) (UsageSummary, error) {
+	if limitRecent <= 0 {
+		limitRecent = 20
+	}
+	var sum UsageSummary
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       COALESCE(SUM(cache_write_tokens), 0),
+		       COALESCE(SUM(cost_usd), 0)
+		FROM usage_logs
+	`).Scan(
+		&sum.TotalCalls,
+		&sum.InputTokens,
+		&sum.OutputTokens,
+		&sum.CacheReadTokens,
+		&sum.CacheWriteTokens,
+		&sum.TotalCostUSD,
+	)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+
+	bRows, err := s.db.QueryContext(ctx, `
+		SELECT provider_id, model, COUNT(*),
+		       COALESCE(SUM(input_tokens), 0),
+		       COALESCE(SUM(output_tokens), 0),
+		       COALESCE(SUM(cost_usd), 0)
+		FROM usage_logs
+		GROUP BY provider_id, model
+		ORDER BY SUM(cost_usd) DESC, COUNT(*) DESC
+	`)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	defer bRows.Close()
+
+	sum.ByProvider = []ProviderUsageBreakdown{}
+	for bRows.Next() {
+		var b ProviderUsageBreakdown
+		if err := bRows.Scan(&b.ProviderID, &b.Model, &b.Calls, &b.InputTokens, &b.OutputTokens, &b.CostUSD); err != nil {
+			return UsageSummary{}, err
+		}
+		sum.ByProvider = append(sum.ByProvider, b)
+	}
+	if err := bRows.Err(); err != nil {
+		return UsageSummary{}, err
+	}
+
+	rRows, err := s.db.QueryContext(ctx, `
+		SELECT id, provider_id, model, wire_format,
+		       input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+		       cost_usd, created_at
+		FROM usage_logs
+		ORDER BY id DESC
+		LIMIT ?
+	`, limitRecent)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	defer rRows.Close()
+
+	sum.Recent = []UsageLogEntry{}
+	for rRows.Next() {
+		var e UsageLogEntry
+		if err := rRows.Scan(
+			&e.ID, &e.ProviderID, &e.Model, &e.WireFormat,
+			&e.InputTokens, &e.OutputTokens, &e.CacheReadTokens, &e.CacheWriteTokens,
+			&e.CostUSD, &e.CreatedAt,
+		); err != nil {
+			return UsageSummary{}, err
+		}
+		sum.Recent = append(sum.Recent, e)
+	}
+	return sum, rRows.Err()
 }
 

@@ -63,6 +63,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("PUT /api/i18n", s.handlePutI18n)
 
 	s.mux.HandleFunc("GET /api/providers", s.handleProviders)
+	s.mux.HandleFunc("PUT /api/providers/{id}", s.handlePutProvider)
+	s.mux.HandleFunc("POST /api/providers/test", s.handleTestProvider)
+	s.mux.HandleFunc("GET /api/providers/copilot/status", s.handleCopilotStatus)
+	s.mux.HandleFunc("POST /api/providers/copilot/device-code", s.handleCopilotDeviceCode)
+	s.mux.HandleFunc("POST /api/providers/copilot/poll", s.handleCopilotPoll)
+	s.mux.HandleFunc("GET /api/providers/copilot/models", s.handleCopilotModels)
+	s.mux.HandleFunc("DELETE /api/providers/copilot/auth", s.handleCopilotDisconnect)
+	s.mux.HandleFunc("GET /api/usage", s.handleUsage)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
 
 	// Generic JSON Collection Store API
@@ -138,10 +146,156 @@ func (s *Server) handlePutI18n(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleProviders(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	var configs []store.ProviderConfig
+	var copilot any
+	if s.runtime != nil && s.runtime.Hub() != nil {
+		configs, _ = s.runtime.Hub().ListProviders(r.Context())
+		copilot = s.runtime.Hub().GetCopilotStatus(r.Context())
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"presets": agent.DefaultPresets(),
+		"configs": configs,
+		"copilot": copilot,
 	})
+}
+
+func (s *Server) handlePutProvider(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		store.ProviderConfig
+		ClearAPIKey bool `json:"clear_api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	body.ProviderConfig.ID = id
+	if body.ProviderConfig.Name == "" {
+		body.ProviderConfig.Name = id
+	}
+	saved, err := s.runtime.Hub().SaveProvider(r.Context(), body.ProviderConfig, body.ClearAPIKey)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrInvalidName) {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
+		writeError(w, http.StatusBadRequest, "provider id is required")
+		return
+	}
+	res, err := s.runtime.Hub().TestProvider(r.Context(), body.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, store.ErrInvalidName) {
+			status = http.StatusBadRequest
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleCopilotStatus(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.runtime.Hub().GetCopilotStatus(r.Context()))
+}
+
+func (s *Server) handleCopilotDeviceCode(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	dc, err := s.runtime.Hub().StartCopilotDeviceFlow(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, dc)
+}
+
+func (s *Server) handleCopilotPoll(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	var body struct {
+		DeviceCode string `json:"device_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceCode == "" {
+		writeError(w, http.StatusBadRequest, "device_code is required")
+		return
+	}
+	res, err := s.runtime.Hub().PollCopilotDeviceFlow(r.Context(), body.DeviceCode)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleCopilotModels(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	models, source, err := s.runtime.Hub().ListCopilotModels(r.Context())
+	resp := map[string]any{
+		"models": models,
+		"source": source,
+	}
+	if err != nil {
+		resp["warning"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleCopilotDisconnect(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Hub() == nil {
+		writeError(w, http.StatusServiceUnavailable, "LLM hub unavailable")
+		return
+	}
+	if err := s.runtime.Hub().DisconnectCopilot(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.runtime.Hub().GetCopilotStatus(r.Context()))
+}
+
+func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	summary, err := s.store.GetUsageSummary(r.Context(), 25)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) handleSkills(w http.ResponseWriter, _ *http.Request) {

@@ -77,4 +77,35 @@ func TestServerEndpoints(t *testing.T) {
 	if got.ID != "proj-1" {
 		t.Fatalf("unexpected id: %s", got.ID)
 	}
+
+	// 4. Providers list, update, test, Copilot models, and usage summary
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("providers get status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/providers/openai", bytes.NewBufferString(`{"name":"OpenAI","format":"openai","base_url":"https://api.openai.com/v1","api_key":"sk-test-1234567890","default_model":"gpt-4o","auth_type":"api_key","enabled":true,"priority":1}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("provider put status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/providers/test", bytes.NewBufferString(`{"id":"openai"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("provider test status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers/copilot/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copilot models status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/usage", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("usage get status = %d", rec.Code)
+	}
 }

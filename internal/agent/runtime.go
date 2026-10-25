@@ -17,85 +17,24 @@ import (
 
 	"github.com/GOAT-Foundry/CORTEX/internal/config"
 	"github.com/GOAT-Foundry/CORTEX/internal/i18n"
+	"github.com/GOAT-Foundry/CORTEX/internal/llmhub"
 	"github.com/GOAT-Foundry/CORTEX/internal/store"
 )
 
-// ProviderPreset describes a built-in LLM provider template supported by CORTEX.
-type ProviderPreset struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Format      string   `json:"format"`
-	BaseURL     string   `json:"base_url"`
-	AuthType    string   `json:"auth_type"` // "api_key", "copilot_device_flow", "none"
-	Endpoints   []string `json:"endpoints"`
-	Description string   `json:"description"`
-}
+// ProviderPreset is an alias for llmhub.Preset for backward compatibility.
+type ProviderPreset = llmhub.Preset
 
 // DefaultPresets returns the built-in LLM provider presets including GitHub Copilot.
 func DefaultPresets() []ProviderPreset {
-	return []ProviderPreset{
-		{
-			ID:          "github-copilot",
-			Name:        "GitHub Copilot (Native)",
-			Format:      string(llm.FormatOpenAI),
-			BaseURL:     "https://api.githubcopilot.com",
-			AuthType:    "copilot_device_flow",
-			Endpoints:   []string{"/chat/completions", "/responses", "/v1/messages", "/models"},
-			Description: "Native GitHub Copilot integration via OAuth Device Flow & automatic session token exchange.",
-		},
-		{
-			ID:          "openai",
-			Name:        "OpenAI",
-			Format:      string(llm.FormatOpenAI),
-			BaseURL:     "https://api.openai.com/v1",
-			AuthType:    "api_key",
-			Endpoints:   []string{"/chat/completions", "/responses"},
-			Description: "OpenAI API (Chat Completions & Responses wire formats).",
-		},
-		{
-			ID:          "anthropic",
-			Name:        "Anthropic Claude",
-			Format:      string(llm.FormatAnthropic),
-			BaseURL:     "https://api.anthropic.com",
-			AuthType:    "api_key",
-			Endpoints:   []string{"/v1/messages"},
-			Description: "Anthropic Messages API with extended thinking support.",
-		},
-		{
-			ID:          "gemini",
-			Name:        "Google Gemini (OpenAI Compatible)",
-			Format:      string(llm.FormatOpenAI),
-			BaseURL:     "https://generativelanguage.googleapis.com/v1beta/openai",
-			AuthType:    "api_key",
-			Endpoints:   []string{"/chat/completions"},
-			Description: "Google Gemini API via OpenAI compatibility layer.",
-		},
-		{
-			ID:          "openrouter",
-			Name:        "OpenRouter",
-			Format:      string(llm.FormatOpenAI),
-			BaseURL:     "https://openrouter.ai/api/v1",
-			AuthType:    "api_key",
-			Endpoints:   []string{"/chat/completions"},
-			Description: "Unified multi-model router for hundreds of foundation models.",
-		},
-		{
-			ID:          "ollama",
-			Name:        "Ollama / Local OpenAI-Compatible",
-			Format:      string(llm.FormatOpenAI),
-			BaseURL:     "http://localhost:11434/v1",
-			AuthType:    "none",
-			Endpoints:   []string{"/chat/completions"},
-			Description: "Local LLM execution via Ollama, vLLM, or LM Studio.",
-		},
-	}
+	return llmhub.DefaultPresets()
 }
 
-// Runtime coordinates Norma agent sessions, built-in CORTEX tools, and skills.
+// Runtime coordinates Norma agent sessions, LLM Hub routing, built-in CORTEX tools, and skills.
 type Runtime struct {
 	cfg    config.Config
 	store  *store.Store
 	i18n   *i18n.Manager
+	hub    *llmhub.Hub
 	skills *skill.Registry
 }
 
@@ -111,8 +50,14 @@ func NewRuntime(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager) *Runt
 		cfg:    cfg,
 		store:  st,
 		i18n:   i18nMgr,
+		hub:    llmhub.New(st),
 		skills: skillsReg,
 	}
+}
+
+// Hub returns the underlying LLM Provider & Copilot Hub.
+func (r *Runtime) Hub() *llmhub.Hub {
+	return r.hub
 }
 
 // SkillsList returns the names and descriptions of loaded skills.
@@ -134,17 +79,24 @@ func (r *Runtime) SkillsList() []map[string]string {
 // NewSession constructs a Norma agentcore.Session equipped with CORTEX domain
 // collection tools, timer scheduling tools, and locale-aware system prompts.
 func (r *Runtime) NewSession(localeOverride string) (*agentcore.Session, error) {
-	format := llm.FormatOpenAI
-	if r.cfg.DefaultProvider == "anthropic" {
-		format = llm.FormatAnthropic
-	} else if r.cfg.DefaultProvider == "openai-responses" {
-		format = llm.FormatOpenAIResponses
-	}
+	return r.NewSessionWithProvider(context.Background(), localeOverride, "", "")
+}
 
-	prov, err := llm.NewProvider(llm.Config{
-		Format: format,
-		Model:  r.cfg.DefaultModel,
-	})
+// NewSessionWithProvider constructs a Norma agentcore.Session routed through the
+// LLM Hub (with failover and token/cost accounting).
+func (r *Runtime) NewSessionWithProvider(ctx context.Context, localeOverride, providerID, modelOverride string) (*agentcore.Session, error) {
+	var (
+		prov llm.Provider
+		err  error
+	)
+	if r.hub != nil {
+		prov, err = r.hub.BuildProvider(ctx, providerID, modelOverride)
+	} else {
+		prov, err = llm.NewProvider(llm.Config{
+			Format: llm.FormatOpenAI,
+			Model:  r.cfg.DefaultModel,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
