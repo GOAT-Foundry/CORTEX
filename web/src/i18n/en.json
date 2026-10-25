@@ -1,0 +1,64 @@
+{
+  "app": {
+    "title": "CORTEX",
+    "subtitle": "AI Agent Application Framework",
+    "sdkBadge": "Norma v0.4.5 · MIT License",
+    "languageLabel": "Language",
+    "agentSyncNotice": "AI Agent output language is synchronized with UI locale"
+  },
+  "nav": {
+    "overview": "Overview",
+    "chat": "Chat",
+    "tasks": "Autonomous Tasks",
+    "timers": "Timers & Cron",
+    "collections": "JSON Collections",
+    "settings": "LLM & Settings"
+  },
+  "overview": {
+    "heading": "Build Domain AI Apps Without Boilerplate",
+    "description": "CORTEX provides a ready-to-use Go + Next.js + SQLite single-binary foundation with GitHub Copilot native LLM routing, streaming chat, autonomous task graphs, self-scheduling timers, and schema-free JSON collections.",
+    "cards": {
+      "copilotTitle": "GitHub Copilot & Multi-LLM",
+      "copilotDesc": "OAuth Device Flow, automatic session token exchange, /chat/completions, /responses, /v1/messages, failover, and cost tracking.",
+      "chatTitle": "Standard Streaming Chat",
+      "chatDesc": "Multi-turn sessions, agent profile switching, real-time SSE for thinking & tool execution, and file attachments.",
+      "tasksTitle": "Autonomous Planner ⇄ Worker DAG",
+      "tasksDesc": "Decompose high-level goals into parallel subagent graphs and produce structured domain artifacts.",
+      "timersTitle": "Timers & schedule_timer Tool",
+      "timersDesc": "Recurring Cron/interval schedules, one-shot run_at timestamps, and agent self-scheduling.",
+      "collectionsTitle": "Zero-Go Domain Collections",
+      "collectionsDesc": "Read and write arbitrary JSON documents via /api/collections/{name} from both Next.js and AI agents.",
+      "i18nTitle": "Built-in i18n (EN / JA)",
+      "i18nDesc": "Switch UI language anytime and automatically synchronize the AI agent's thinking and output language."
+    }
+  },
+  "chat": {
+    "title": "Standard Agent Chat",
+    "subtitle": "Real-time SSE streaming with Thinking & Tool Call visibility",
+    "placeholder": "Ask the CORTEX agent or instruct it to read/write a collection...",
+    "send": "Send",
+    "agentLabel": "Active Agent",
+    "defaultAgent": "Default General Agent"
+  },
+  "tasks": {
+    "title": "Autonomous Task & Graph Execution",
+    "subtitle": "Goal Decomposition → Planner ⇄ Worker Parallel Execution → Artifact Generation",
+    "newGoalPlaceholder": "Describe a high-level goal for autonomous decomposition...",
+    "launchGoal": "Decompose & Run"
+  },
+  "timers": {
+    "title": "Timers & Autonomous Scheduler",
+    "subtitle": "Cron expressions, intervals, one-shot run_at jobs, and agent-created timers (schedule_timer)",
+    "empty": "No active timers registered yet."
+  },
+  "collections": {
+    "title": "Generic JSON Collection Store",
+    "subtitle": "Schema-free persistence shared between Next.js UI (/api/collections/{name}) and AI Agent tools",
+    "sampleCollection": "projects"
+  },
+  "settings": {
+    "title": "LLM Providers, GitHub Copilot & Extensibility",
+    "subtitle": "Configure GitHub Copilot Device Flow, provider presets, failover, MCP servers, Skills, and Custom Tools",
+    "connectCopilot": "Connect via GitHub Device Flow"
+  }
+}

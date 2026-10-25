@@ -1,0 +1,19 @@
+services:
+  cortex:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cortex
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
+      - ./skills:/app/skills
+    environment:
+      - PORT=8080
+      - CORTEX_DB_PATH=/data/cortex.db
+      - CORTEX_SKILLS_DIR=/app/skills
+      - CORTEX_LOCALE=${CORTEX_LOCALE:-en}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    restart: unless-stopped
