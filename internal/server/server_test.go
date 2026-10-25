@@ -132,19 +132,19 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatalf("agents list status = %d", rec.Code)
 	}
 
-	// Create chat session
+	// Create chat session with an initial model override
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat/sessions", bytes.NewBufferString(`{"id":"sess-test-1","title":"New Chat","agent_id":"coder"}`)))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/chat/sessions", bytes.NewBufferString(`{"id":"sess-test-1","title":"New Chat","agent_id":"coder","model":"gpt-4o-mini"}`)))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create chat session status = %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Send message with attachment over SSE
+	// Send message with attachment and an explicitly cleared model override ("model":"") over SSE
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(
 		http.MethodPost,
 		"/api/chat/sessions/sess-test-1/messages",
-		bytes.NewBufferString(`{"prompt":"Review this file","provider_id":"openai","attachments":[{"name":"spec.md","media_type":"text/markdown","content":"# Spec","size_bytes":6}]}`),
+		bytes.NewBufferString(`{"prompt":"Review this file","provider_id":"openai","model":"","attachments":[{"name":"spec.md","media_type":"text/markdown","content":"# Spec","size_bytes":6}]}`),
 	))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("session chat status = %d: %s", rec.Code, rec.Body.String())
@@ -153,7 +153,7 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatalf("expected streamed assistant text in SSE body, got: %s", rec.Body.String())
 	}
 
-	// Fetch session history and verify both user and assistant messages were persisted
+	// Fetch session history and verify both user and assistant messages were persisted, and cleared model override was saved
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/chat/sessions/sess-test-1", nil))
 	if rec.Code != http.StatusOK {
@@ -165,6 +165,9 @@ func TestServerEndpoints(t *testing.T) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &sessionDetail); err != nil {
 		t.Fatalf("decode session detail: %v", err)
+	}
+	if sessionDetail.Session.Model != "" {
+		t.Fatalf("expected cleared session model override to persist as empty string, got %q", sessionDetail.Session.Model)
 	}
 	if len(sessionDetail.Messages) != 2 {
 		t.Fatalf("expected 2 persisted messages, got %d", len(sessionDetail.Messages))

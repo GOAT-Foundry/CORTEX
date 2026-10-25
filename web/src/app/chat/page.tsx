@@ -81,6 +81,7 @@ export default function ChatPage() {
 
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sessionLoadSeqRef = useRef<number>(0);
 
   const loadSessionsAndAgents = () => {
     fetch("/api/agents")
@@ -108,11 +109,13 @@ export default function ChatPage() {
 
   const handleSelectSession = async (id: string) => {
     if (streaming) handleStop();
+    const seq = ++sessionLoadSeqRef.current;
     setActiveSessionId(id);
     try {
       const res = await fetch(`/api/chat/sessions/${id}`);
-      if (!res.ok) return;
+      if (!res.ok || seq !== sessionLoadSeqRef.current) return;
       const data = await res.json();
+      if (seq !== sessionLoadSeqRef.current) return;
       if (data.session) {
         setSelectedAgentId(data.session.agent_id || "default");
         setModelOverride(data.session.model || "");
@@ -127,6 +130,7 @@ export default function ChatPage() {
 
   const handleNewChat = async () => {
     if (streaming) handleStop();
+    const seq = ++sessionLoadSeqRef.current;
     try {
       const res = await fetch("/api/chat/sessions", {
         method: "POST",
@@ -137,15 +141,18 @@ export default function ChatPage() {
           model: modelOverride,
         }),
       });
-      if (res.ok) {
+      if (res.ok && seq === sessionLoadSeqRef.current) {
         const created: ChatSession = await res.json();
+        if (seq !== sessionLoadSeqRef.current) return;
         setActiveSessionId(created.id);
         setMessages([]);
         loadSessionsAndAgents();
       }
     } catch {
-      setActiveSessionId("");
-      setMessages([]);
+      if (seq === sessionLoadSeqRef.current) {
+        setActiveSessionId("");
+        setMessages([]);
+      }
     }
   };
 
@@ -162,6 +169,9 @@ export default function ChatPage() {
 
   const handleDeleteSession = async (id: string) => {
     if (activeSessionId === id && streaming) handleStop();
+    if (activeSessionId === id) {
+      sessionLoadSeqRef.current++;
+    }
     await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" }).catch(
       () => {}
     );
@@ -180,6 +190,18 @@ export default function ChatPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agent_id: nextAgent }),
       }).catch(() => {});
+      loadSessionsAndAgents();
+    }
+  };
+
+  const handleModelCommit = async (nextModel: string) => {
+    if (activeSessionId) {
+      await fetch(`/api/chat/sessions/${activeSessionId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: nextModel }),
+      }).catch(() => {});
+      loadSessionsAndAgents();
     }
   };
 
@@ -493,6 +515,7 @@ export default function ChatPage() {
             <input
               value={modelOverride}
               onChange={(e) => setModelOverride(e.target.value)}
+              onBlur={(e) => handleModelCommit(e.target.value)}
               placeholder={dict.chat.modelPlaceholder}
               className="rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-200 w-44"
             />

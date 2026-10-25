@@ -673,9 +673,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSessionID string) {
 	var req struct {
 		SessionID   string                 `json:"session_id"`
-		AgentID     string                 `json:"agent_id"`
-		ProviderID  string                 `json:"provider_id"`
-		Model       string                 `json:"model"`
+		AgentID     *string                `json:"agent_id"`
+		ProviderID  *string                `json:"provider_id"`
+		Model       *string                `json:"model"`
 		Prompt      string                 `json:"prompt"`
 		Locale      string                 `json:"locale"`
 		Attachments []store.ChatAttachment `json:"attachments"`
@@ -715,9 +715,20 @@ func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSess
 		r.Header.Get("Accept-Language"),
 	)
 
-	agentID := req.AgentID
-	providerID := req.ProviderID
-	model := req.Model
+	var (
+		agentID    string
+		providerID string
+		model      string
+	)
+	if req.AgentID != nil {
+		agentID = *req.AgentID
+	}
+	if req.ProviderID != nil {
+		providerID = *req.ProviderID
+	}
+	if req.Model != nil {
+		model = *req.Model
+	}
 
 	if s.store != nil {
 		cs, err := s.store.GetChatSession(r.Context(), sessionID)
@@ -744,23 +755,33 @@ func (s *Server) streamChatTurn(w http.ResponseWriter, r *http.Request, pathSess
 				return
 			}
 		} else {
+			dirty := false
 			if (cs.Title == "New Chat" || cs.Title == "新規チャット") && req.Prompt != "" {
 				title := req.Prompt
 				if len([]rune(title)) > 36 {
 					title = string([]rune(title)[:36]) + "…"
 				}
 				cs.Title = title
+				dirty = true
+			}
+			if req.AgentID != nil && *req.AgentID != "" && *req.AgentID != cs.AgentID {
+				cs.AgentID = *req.AgentID
+				dirty = true
+			}
+			if req.ProviderID != nil && *req.ProviderID != cs.ProviderID {
+				cs.ProviderID = *req.ProviderID
+				dirty = true
+			}
+			if req.Model != nil && *req.Model != cs.Model {
+				cs.Model = *req.Model
+				dirty = true
+			}
+			if dirty {
 				_, _ = s.store.SaveChatSession(r.Context(), cs)
 			}
-			if agentID == "" {
-				agentID = cs.AgentID
-			}
-			if providerID == "" {
-				providerID = cs.ProviderID
-			}
-			if model == "" {
-				model = cs.Model
-			}
+			agentID = cs.AgentID
+			providerID = cs.ProviderID
+			model = cs.Model
 		}
 
 		if _, err := s.store.AppendChatMessage(r.Context(), store.ChatMessage{
