@@ -20,7 +20,7 @@ Built on top of the Apache-2.0 licensed [**Norma**](https://github.com/h-morozum
 - **Standard Streaming Chat (`/chat`)**: Multi-turn conversations, agent profile switching, real-time Server-Sent Events (SSE) for text, thinking/reasoning blocks, and tool calls, plus file attachments.
 - **Autonomous Task & Graph Execution (`/tasks`)**: Goal decomposition into a DAG, parallel Planner ⇄ Worker subagent execution, and structured artifact/report generation.
 - **Timers & Self-Scheduling Agents (`/timers`)**: Recurring schedules (Cron / intervals), one-shot timestamped runs (`run_at`), and the `schedule_timer` tool allowing agents to schedule their own follow-up tasks.
-- **Extensible Capabilities**: Agent/prompt management, declarative Skills (`skills/*/SKILL.md`), Model Context Protocol (MCP) client connections, Custom Tools (Python / Bash / HTTP), and keyless Web Search (`ddgs`).
+- **Extensible Capabilities**: Agent/prompt management, declarative Skills (`skills/*/SKILL.md`: `domain-collection-helper`, `web-research`, `data-analysis`, `scheduled-monitoring`, `shell-automation`), Model Context Protocol (MCP) client connections, Custom Tools (Python / Bash / PowerShell / HTTP), and keyless Web Search (`ddgs`).
 
 ---
 

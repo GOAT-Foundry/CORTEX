@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,9 @@ type Runtime struct {
 
 // NewRuntime initializes the Norma-backed CORTEX agent runtime.
 func NewRuntime(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager) *Runtime {
+	if cfg.SkillsDir != "" {
+		seedDefaultSkills(cfg.SkillsDir)
+	}
 	var skillsReg *skill.Registry
 	if info, err := os.Stat(cfg.SkillsDir); err == nil && info.IsDir() {
 		if reg, err := skill.LoadDir(cfg.SkillsDir); err == nil {
@@ -113,6 +117,95 @@ func (r *Runtime) seedDefaultAgents(ctx context.Context) {
 	for _, a := range DefaultAgents() {
 		_, _ = r.store.SaveAgent(ctx, a)
 	}
+}
+
+type builtinSkillDef struct {
+	DirName      string
+	Name         string
+	Description  string
+	Instructions string
+}
+
+// DefaultBuiltinSkills returns the standard SKILL.md definitions bundled with CORTEX.
+func DefaultBuiltinSkills() []builtinSkillDef {
+	return []builtinSkillDef{
+		{
+			DirName:     "example",
+			Name:        "domain-collection-helper",
+			Description: "Guide for reading and writing structured application state in CORTEX JSON Collections and scheduling follow-up timers.",
+			Instructions: "# CORTEX Domain Collection & Timer Skill\n\n" +
+				"1. Inspect existing collections first using `collection_list` with an empty `collection` parameter.\n" +
+				"2. Read records using `collection_list` or `collection_get`.\n" +
+				"3. Persist domain artifacts or records using `collection_put` so the Next.js frontend can render them via `/api/collections/{name}`.\n" +
+				"4. Schedule follow-ups using `schedule_timer` when a task requires periodic monitoring or a deferred check (`schedule: \"once\"` with `run_at`).",
+		},
+		{
+			DirName:     "web-research",
+			Name:        "web-research",
+			Description: "Methodical web search (ddgs) and page retrieval (WebFetch) workflow for gathering, verifying, and synthesizing factual information with citations.",
+			Instructions: "# Web Research & Source Verification Skill\n\n" +
+				"1. Issue concise, targeted queries via `web_search` (`ddgs` default).\n" +
+				"2. Fetch authoritative primary URLs via `WebFetch` rather than relying on snippets alone.\n" +
+				"3. Cross-verify critical claims across at least two sources and include URLs in your report or collection record.",
+		},
+		{
+			DirName:     "data-analysis",
+			Name:        "data-analysis",
+			Description: "Structured data aggregation, JSON/CSV statistical processing, and Markdown/JSON report generation using CORTEX collections and Python/shell scripts.",
+			Instructions: "# Data Analysis & Reporting Skill\n\n" +
+				"1. Load domain records via `collection_list`/`collection_get` or inspect local files with `Read`.\n" +
+				"2. Compute exact sums, averages, and groupings deterministically using Python (`python3 -c` / `python -c`).\n" +
+				"3. Persist structured results with `collection_put` and present a Markdown summary table.",
+		},
+		{
+			DirName:     "scheduled-monitoring",
+			Name:        "scheduled-monitoring",
+			Description: "Patterns for recurring Cron/interval checks, one-shot deferred follow-ups, and stateful alerting using schedule_timer and CORTEX collections.",
+			Instructions: "# Scheduled Monitoring & Autonomous Follow-Up Skill\n\n" +
+				"1. Check `list_timers` first to avoid duplicate schedules.\n" +
+				"2. Use fixed intervals (`\"15m\"`, `\"1h\"`), 5-field UTC Cron (`\"0 * * * *\"`), or `schedule: \"once\"` with RFC3339 `run_at`.\n" +
+				"3. Write self-contained timer prompts that read prior state via `collection_get` and persist updates via `collection_put`.",
+		},
+		{
+			DirName:     "shell-automation",
+			Name:        "shell-automation",
+			Description: "Cross-platform shell and PowerShell execution guide for Norma's Bash tool and CORTEX Custom Tools across Linux/Docker (bash) and Windows (PowerShell).",
+			Instructions: "# Cross-Platform Shell & PowerShell Automation Skill\n\n" +
+				"Norma's `Bash` tool automatically selects `powershell -NoProfile -NonInteractive -Command` on Windows and `bash -c` on Linux/macOS/Docker.\n" +
+				"- On Windows (`powershell`): Do NOT use POSIX heredocs (`<< 'EOF'`); use PowerShell here-strings (`@'... '@`) or `python -c`. Chain built-ins with `;`.\n" +
+				"- On Linux/Docker (`bash`): Pass non-interactive flags (`--no-pager`, `-y`) and prefer Python scripts for complex parsing.",
+		},
+	}
+}
+
+func seedDefaultSkills(skillsDir string) {
+	for _, s := range DefaultBuiltinSkills() {
+		dir := filepath.Join(skillsDir, s.DirName)
+		skillPath := filepath.Join(dir, "SKILL.md")
+		if _, err := os.Stat(skillPath); err == nil {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("---\n")
+		b.WriteString("name: " + s.Name + "\n")
+		b.WriteString("description: " + s.Description + "\n")
+		b.WriteString("license: MIT\n")
+		b.WriteString("---\n\n")
+		b.WriteString(s.Instructions + "\n")
+		_ = os.WriteFile(skillPath, []byte(b.String()), 0o644)
+	}
+}
+
+// HostEnvironmentReminder returns a system reminder segment describing the host OS
+// and the shell executable used by Norma's Bash tool.
+func HostEnvironmentReminder() string {
+	if runtime.GOOS == "windows" {
+		return "# hostEnvironment\nOS: windows (Norma `Bash` tool executes via `powershell -NoProfile -NonInteractive -Command`; use PowerShell syntax or `python -c`, avoid POSIX heredocs)."
+	}
+	return fmt.Sprintf("# hostEnvironment\nOS: %s (Norma `Bash` tool executes via `bash -c`).", runtime.GOOS)
 }
 
 // Hub returns the underlying LLM Provider & Copilot Hub.
@@ -227,10 +320,18 @@ func (r *Runtime) SaveSkill(name, description, instructions string) error {
 	return r.ReloadSkills()
 }
 
-// DeleteSkill removes a skill directory under SkillsDir/<name> and reloads the registry.
+// DeleteSkill removes a skill directory under SkillsDir/<name> (or its resolved Dir) and reloads the registry.
 func (r *Runtime) DeleteSkill(name string) error {
 	if err := store.ValidateIdent(name); err != nil {
 		return err
+	}
+	r.skillsMu.RLock()
+	reg := r.skills
+	r.skillsMu.RUnlock()
+	if reg != nil {
+		if s, ok := reg.Get(name); ok && s.Dir != "" {
+			_ = os.RemoveAll(s.Dir)
+		}
 	}
 	dir := filepath.Join(r.cfg.SkillsDir, name)
 	if err := os.RemoveAll(dir); err != nil {
@@ -363,7 +464,7 @@ func (r *Runtime) NewSessionWithCleanup(ctx context.Context, opts SessionOptions
 		Transcript:         r.transcripts,
 		SessionID:          opts.SessionID,
 		SystemReminderFunc: func() string {
-			return r.i18n.SystemReminder(opts.Locale)
+			return r.i18n.SystemReminder(opts.Locale) + "\n" + HostEnvironmentReminder()
 		},
 	}
 
@@ -761,6 +862,23 @@ func executeCustomTool(ctx context.Context, c store.CustomToolConfig, input json
 			shBin = "sh"
 		}
 		cmd := exec.CommandContext(runCtx, shBin, "-c", c.Target)
+		cmd.Stdin = bytes.NewReader(input)
+		cmd.Env = append(os.Environ(), "CORTEX_TOOL_INPUT="+string(input))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return tool.Errorf(fmt.Sprintf("%v: %s", err, string(out))), nil
+		}
+		return tool.Text(string(out)), nil
+
+	case "powershell":
+		psBin, err := exec.LookPath("pwsh")
+		if err != nil {
+			psBin, err = exec.LookPath("powershell")
+		}
+		if err != nil {
+			return tool.Errorf("powershell runner requires 'pwsh' or 'powershell' installed on the host (use 'bash' or 'python' on Linux/Alpine containers)"), nil
+		}
+		cmd := exec.CommandContext(runCtx, psBin, "-NoProfile", "-NonInteractive", "-Command", c.Target)
 		cmd.Stdin = bytes.NewReader(input)
 		cmd.Env = append(os.Environ(), "CORTEX_TOOL_INPUT="+string(input))
 		out, err := cmd.CombinedOutput()

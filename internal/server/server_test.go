@@ -184,7 +184,18 @@ func TestServerEndpoints(t *testing.T) {
 		t.Fatalf("delete chat session status = %d", rec.Code)
 	}
 
-	// 6. Extensibility Suite: Agent CRUD, Skills, MCP, Custom Tools, and WebSearch
+	// 6. Extensibility Suite: Agent CRUD, Built-in & Custom Skills, MCP, Custom Tools (including powershell), and WebSearch
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/skills", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get skills status = %d", rec.Code)
+	}
+	for _, wantSkill := range []string{"domain-collection-helper", "web-research", "data-analysis", "scheduled-monitoring", "shell-automation"} {
+		if !bytes.Contains(rec.Body.Bytes(), []byte(wantSkill)) {
+			t.Fatalf("expected built-in skill %q in /api/skills response, got: %s", wantSkill, rec.Body.String())
+		}
+	}
+
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/agents/default", nil))
 	if rec.Code != http.StatusBadRequest {
@@ -216,13 +227,16 @@ func TestServerEndpoints(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/custom", bytes.NewBufferString(`{"id":"ping_tool","name":"ping_tool","description":"Ping tool","runner":"bash","target":"echo pong","enabled":true}`)))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tools/custom", bytes.NewBufferString(`{"id":"ps_tool","name":"ps_tool","description":"PowerShell tool","runner":"powershell","target":"Write-Output 'ok'","enabled":true}`)))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("save custom tool status = %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("save powershell custom tool status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"runner":"powershell"`)) {
+		t.Fatalf("expected runner=powershell to be preserved, got: %s", rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
-	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/tools/custom/ping_tool", nil))
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/tools/custom/ps_tool", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete custom tool status = %d", rec.Code)
 	}
