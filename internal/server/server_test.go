@@ -232,4 +232,38 @@ func TestServerEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("put websearch status = %d", rec.Code)
 	}
+
+	// 7. Timers & Scheduler CRUD + Manual Run Now + Run History
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/timers", bytes.NewBufferString(`{"id":"timer-test-1","name":"Hourly Check","schedule":"0 * * * *","prompt":"Run status check","agent_id":"default","enabled":true}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create timer status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/timers/timer-test-1", bytes.NewBufferString(`{"schedule":"15m","enabled":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update timer status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/timers/timer-test-1/run", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run timer now status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("Hello from CORTEX chat!")) {
+		t.Fatalf("expected timer run output from mockLLM, got: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/timers/runs?timer_id=timer-test-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list timer runs status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/timers/timer-test-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete timer status = %d", rec.Code)
+	}
 }

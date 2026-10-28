@@ -39,6 +39,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if rt.Scheduler() != nil {
+		rt.Scheduler().Start(ctx, 2*time.Second)
+	}
+
 	go func() {
 		log.Printf("CORTEX server listening on http://localhost:%s (locale=%s, db=%s)", cfg.Port, i18nMgr.Get(), cfg.DBPath)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

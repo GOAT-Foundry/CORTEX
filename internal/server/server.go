@@ -15,6 +15,7 @@ import (
 	"github.com/GOAT-Foundry/CORTEX/internal/agent"
 	"github.com/GOAT-Foundry/CORTEX/internal/config"
 	"github.com/GOAT-Foundry/CORTEX/internal/i18n"
+	"github.com/GOAT-Foundry/CORTEX/internal/scheduler"
 	"github.com/GOAT-Foundry/CORTEX/internal/store"
 	"github.com/GOAT-Foundry/CORTEX/internal/webui"
 )
@@ -112,6 +113,10 @@ func (s *Server) registerRoutes() {
 	// Timers / Scheduler API
 	s.mux.HandleFunc("GET /api/timers", s.handleListTimers)
 	s.mux.HandleFunc("POST /api/timers", s.handleCreateTimer)
+	s.mux.HandleFunc("PUT /api/timers/{id}", s.handleUpdateTimer)
+	s.mux.HandleFunc("DELETE /api/timers/{id}", s.handleDeleteTimer)
+	s.mux.HandleFunc("POST /api/timers/{id}/run", s.handleRunTimerNow)
+	s.mux.HandleFunc("GET /api/timers/runs", s.handleListTimerRuns)
 
 	// Agents & Chat Session Management API
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
@@ -707,28 +712,177 @@ func (s *Server) handleListTimers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"timers": timers})
+	runs, _ := s.store.ListTimerRuns(r.Context(), "", 30)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"timers": timers,
+		"runs":   runs,
+	})
 }
 
 func (s *Server) handleCreateTimer(w http.ResponseWriter, r *http.Request) {
-	var in store.TimerEntry
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	var body struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
+		RunAt    string `json:"run_at"`
+		Prompt   string `json:"prompt"`
+		AgentID  string `json:"agent_id"`
+		Enabled  *bool  `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if in.ID == "" {
-		in.ID = fmt.Sprintf("timer-%d", time.Now().UTC().UnixNano())
+	if body.ID == "" {
+		body.ID = fmt.Sprintf("timer-%d", time.Now().UTC().UnixNano())
 	}
-	if in.Name == "" || in.Schedule == "" || in.Prompt == "" {
+	if body.Name == "" || body.Schedule == "" || body.Prompt == "" {
 		writeError(w, http.StatusBadRequest, "name, schedule, and prompt are required")
 		return
 	}
-	saved, err := s.store.SaveTimer(r.Context(), in)
+	nextRun, err := scheduler.ValidateSchedule(body.Schedule, body.RunAt, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
+	nextRunStr := ""
+	if enabled {
+		nextRunStr = nextRun.Format(time.RFC3339)
+	}
+	saved, err := s.store.SaveTimer(r.Context(), store.TimerEntry{
+		ID:        body.ID,
+		Name:      body.Name,
+		Schedule:  body.Schedule,
+		RunAt:     body.RunAt,
+		Prompt:    body.Prompt,
+		AgentID:   body.AgentID,
+		Enabled:   enabled,
+		NextRunAt: nextRunStr,
+		CreatedBy: "user",
+	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, saved)
+}
+
+func (s *Server) handleUpdateTimer(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	existing, err := s.store.GetTimer(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var patch struct {
+		Name     *string `json:"name"`
+		Schedule *string `json:"schedule"`
+		RunAt    *string `json:"run_at"`
+		Prompt   *string `json:"prompt"`
+		AgentID  *string `json:"agent_id"`
+		Enabled  *bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if patch.Name != nil && *patch.Name != "" {
+		existing.Name = *patch.Name
+	}
+	if patch.Schedule != nil && *patch.Schedule != "" {
+		existing.Schedule = *patch.Schedule
+	}
+	if patch.RunAt != nil {
+		existing.RunAt = *patch.RunAt
+	}
+	if patch.Prompt != nil && *patch.Prompt != "" {
+		existing.Prompt = *patch.Prompt
+	}
+	if patch.AgentID != nil && *patch.AgentID != "" {
+		existing.AgentID = *patch.AgentID
+	}
+	if patch.Enabled != nil {
+		existing.Enabled = *patch.Enabled
+	}
+
+	nextRun, err := scheduler.ValidateSchedule(existing.Schedule, existing.RunAt, time.Now().UTC())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if existing.Enabled {
+		existing.NextRunAt = nextRun.Format(time.RFC3339)
+	} else {
+		existing.NextRunAt = ""
+	}
+
+	saved, err := s.store.SaveTimer(r.Context(), existing)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (s *Server) handleDeleteTimer(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.DeleteTimer(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+}
+
+func (s *Server) handleRunTimerNow(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.Scheduler() == nil {
+		writeError(w, http.StatusServiceUnavailable, "scheduler unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	runRec, err := s.runtime.Scheduler().TriggerNow(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, runRec)
+}
+
+func (s *Server) handleListTimerRuns(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	timerID := r.URL.Query().Get("timer_id")
+	runs, err := s.store.ListTimerRuns(r.Context(), timerID, 50)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {

@@ -36,14 +36,31 @@ type CollectionItem struct {
 type TimerEntry struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`
-	Schedule   string    `json:"schedule"` // cron expression, interval, or "once"
+	Schedule   string    `json:"schedule"` // cron expression, interval (e.g. "15m"), or "once"
 	RunAt      string    `json:"run_at,omitempty"`
 	Prompt     string    `json:"prompt"`
 	AgentID    string    `json:"agent_id"`
 	Enabled    bool      `json:"enabled"`
 	CreatedBy  string    `json:"created_by"` // "user" or "agent"
+	LastRunAt  string    `json:"last_run_at,omitempty"`
+	NextRunAt  string    `json:"next_run_at,omitempty"`
+	LastStatus string    `json:"last_status,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// TimerRunEntry records one execution of a scheduled or manually triggered timer.
+type TimerRunEntry struct {
+	ID          int64     `json:"id"`
+	TimerID     string    `json:"timer_id"`
+	TimerName   string    `json:"timer_name"`
+	Trigger     string    `json:"trigger"` // "schedule" | "manual"
+	Status      string    `json:"status"`  // "running" | "succeeded" | "failed"
+	Output      string    `json:"output,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	DurationMs  int64     `json:"duration_ms"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt string    `json:"completed_at,omitempty"`
 }
 
 // ProviderConfig stores a configured LLM provider profile and failover priority.
@@ -233,17 +250,36 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_collections_name ON collections(collection, updated_at DESC);
 
 	CREATE TABLE IF NOT EXISTS timers (
-		id         TEXT PRIMARY KEY,
-		name       TEXT NOT NULL,
-		schedule   TEXT NOT NULL,
-		run_at     TEXT NOT NULL DEFAULT '',
-		prompt     TEXT NOT NULL,
-		agent_id   TEXT NOT NULL DEFAULT 'default',
-		enabled    INTEGER NOT NULL DEFAULT 1,
-		created_by TEXT NOT NULL DEFAULT 'user',
-		created_at DATETIME NOT NULL,
-		updated_at DATETIME NOT NULL
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		schedule    TEXT NOT NULL,
+		run_at      TEXT NOT NULL DEFAULT '',
+		prompt      TEXT NOT NULL,
+		agent_id    TEXT NOT NULL DEFAULT 'default',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_by  TEXT NOT NULL DEFAULT 'user',
+		last_run_at TEXT NOT NULL DEFAULT '',
+		next_run_at TEXT NOT NULL DEFAULT '',
+		last_status TEXT NOT NULL DEFAULT 'idle',
+		created_at  DATETIME NOT NULL,
+		updated_at  DATETIME NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS timer_runs (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		timer_id     TEXT NOT NULL,
+		timer_name   TEXT NOT NULL,
+		trigger_type TEXT NOT NULL DEFAULT 'schedule',
+		status       TEXT NOT NULL DEFAULT 'running',
+		output       TEXT NOT NULL DEFAULT '',
+		error        TEXT NOT NULL DEFAULT '',
+		duration_ms  INTEGER NOT NULL DEFAULT 0,
+		started_at   DATETIME NOT NULL,
+		completed_at TEXT NOT NULL DEFAULT ''
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_timer_runs_started ON timer_runs(started_at DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_timer_runs_timer ON timer_runs(timer_id, id DESC);
 
 	CREATE TABLE IF NOT EXISTS settings (
 		key        TEXT PRIMARY KEY,
@@ -345,7 +381,18 @@ func (s *Store) migrate() error {
 	);
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+	// Ensure new columns exist when upgrading an older SQLite database file.
+	for _, alter := range []string{
+		`ALTER TABLE timers ADD COLUMN last_run_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE timers ADD COLUMN next_run_at TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE timers ADD COLUMN last_status TEXT NOT NULL DEFAULT 'idle'`,
+	} {
+		_, _ = s.db.Exec(alter)
+	}
+	return nil
 }
 
 // ValidateIdent checks if a collection name or item ID is safe.
@@ -473,9 +520,12 @@ func (s *Store) DeleteItem(ctx context.Context, collection, id string) error {
 
 // ListTimers returns all registered timer entries.
 func (s *Store) ListTimers(ctx context.Context) ([]TimerEntry, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, schedule, run_at, prompt, agent_id, enabled, created_by, created_at, updated_at FROM timers ORDER BY created_at DESC`,
-	)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, schedule, run_at, prompt, agent_id, enabled, created_by,
+		       last_run_at, next_run_at, last_status, created_at, updated_at
+		FROM timers
+		ORDER BY created_at DESC, id ASC
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -485,13 +535,39 @@ func (s *Store) ListTimers(ctx context.Context) ([]TimerEntry, error) {
 	for rows.Next() {
 		var t TimerEntry
 		var enabled int
-		if err := rows.Scan(&t.ID, &t.Name, &t.Schedule, &t.RunAt, &t.Prompt, &t.AgentID, &enabled, &t.CreatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(
+			&t.ID, &t.Name, &t.Schedule, &t.RunAt, &t.Prompt, &t.AgentID, &enabled, &t.CreatedBy,
+			&t.LastRunAt, &t.NextRunAt, &t.LastStatus, &t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetTimer retrieves a single timer entry by ID.
+func (s *Store) GetTimer(ctx context.Context, id string) (TimerEntry, error) {
+	if err := ValidateIdent(id); err != nil {
+		return TimerEntry{}, err
+	}
+	var t TimerEntry
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, schedule, run_at, prompt, agent_id, enabled, created_by,
+		       last_run_at, next_run_at, last_status, created_at, updated_at
+		FROM timers
+		WHERE id = ?
+	`, id).Scan(
+		&t.ID, &t.Name, &t.Schedule, &t.RunAt, &t.Prompt, &t.AgentID, &enabled, &t.CreatedBy,
+		&t.LastRunAt, &t.NextRunAt, &t.LastStatus, &t.CreatedAt, &t.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TimerEntry{}, ErrNotFound
+	}
+	t.Enabled = enabled != 0
+	return t, err
 }
 
 // SaveTimer inserts or updates a timer entry.
@@ -510,13 +586,18 @@ func (s *Store) SaveTimer(ctx context.Context, t TimerEntry) (TimerEntry, error)
 	if t.CreatedBy == "" {
 		t.CreatedBy = "user"
 	}
+	if t.LastStatus == "" {
+		t.LastStatus = "idle"
+	}
 	enabled := 0
 	if t.Enabled {
 		enabled = 1
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO timers (id, name, schedule, run_at, prompt, agent_id, enabled, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO timers (
+			id, name, schedule, run_at, prompt, agent_id, enabled, created_by,
+			last_run_at, next_run_at, last_status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			schedule = excluded.schedule,
@@ -524,9 +605,173 @@ func (s *Store) SaveTimer(ctx context.Context, t TimerEntry) (TimerEntry, error)
 			prompt = excluded.prompt,
 			agent_id = excluded.agent_id,
 			enabled = excluded.enabled,
+			last_run_at = excluded.last_run_at,
+			next_run_at = excluded.next_run_at,
+			last_status = excluded.last_status,
 			updated_at = excluded.updated_at
-	`, t.ID, t.Name, t.Schedule, t.RunAt, t.Prompt, t.AgentID, enabled, t.CreatedBy, t.CreatedAt, t.UpdatedAt)
-	return t, err
+	`,
+		t.ID, t.Name, t.Schedule, t.RunAt, t.Prompt, t.AgentID, enabled, t.CreatedBy,
+		t.LastRunAt, t.NextRunAt, t.LastStatus, t.CreatedAt, t.UpdatedAt,
+	)
+	if err != nil {
+		return TimerEntry{}, err
+	}
+	return s.GetTimer(ctx, t.ID)
+}
+
+// UpdateTimerRuntimeState updates only the runtime scheduling fields of an existing timer
+// without recreating a deleted row. When requireEnabled is true, the update only succeeds
+// if the timer is still enabled.
+func (s *Store) UpdateTimerRuntimeState(ctx context.Context, id, lastRunAt, nextRunAt, lastStatus string, disable, requireEnabled bool) (bool, error) {
+	if err := ValidateIdent(id); err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	var (
+		res sql.Result
+		err error
+	)
+	if disable {
+		q := `UPDATE timers SET last_run_at = ?, next_run_at = ?, last_status = ?, enabled = 0, updated_at = ? WHERE id = ?`
+		if requireEnabled {
+			q += ` AND enabled = 1`
+		}
+		res, err = s.db.ExecContext(ctx, q, lastRunAt, nextRunAt, lastStatus, now, id)
+	} else {
+		q := `UPDATE timers SET last_run_at = ?, next_run_at = ?, last_status = ?, updated_at = ? WHERE id = ?`
+		if requireEnabled {
+			q += ` AND enabled = 1`
+		}
+		res, err = s.db.ExecContext(ctx, q, lastRunAt, nextRunAt, lastStatus, now, id)
+	}
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteTimer deletes a timer and its execution run logs.
+func (s *Store) DeleteTimer(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM timer_runs WHERE timer_id = ?`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM timers WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordTimerRunStart inserts a new running entry into timer_runs.
+func (s *Store) RecordTimerRunStart(ctx context.Context, timerID, timerName, trigger string) (TimerRunEntry, error) {
+	now := time.Now().UTC()
+	if trigger == "" {
+		trigger = "schedule"
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO timer_runs (timer_id, timer_name, trigger_type, status, started_at)
+		VALUES (?, ?, ?, 'running', ?)
+	`, timerID, timerName, trigger, now)
+	if err != nil {
+		return TimerRunEntry{}, err
+	}
+	id, _ := res.LastInsertId()
+	return TimerRunEntry{
+		ID:        id,
+		TimerID:   timerID,
+		TimerName: timerName,
+		Trigger:   trigger,
+		Status:    "running",
+		StartedAt: now,
+	}, nil
+}
+
+// RecordTimerRunFinish updates a timer_runs row with the final status, output, error, and duration,
+// capping oversized output and pruning old rows beyond the latest 200 entries.
+func (s *Store) RecordTimerRunFinish(ctx context.Context, runID int64, status, output, errMsg string, durationMs int64) (TimerRunEntry, error) {
+	const maxLogLen = 64 << 10
+	if len(output) > maxLogLen {
+		output = output[:maxLogLen] + "\n...[truncated]"
+	}
+	if len(errMsg) > maxLogLen {
+		errMsg = errMsg[:maxLogLen] + "\n...[truncated]"
+	}
+	completedAt := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE timer_runs
+		SET status = ?, output = ?, error = ?, duration_ms = ?, completed_at = ?
+		WHERE id = ?
+	`, status, output, errMsg, durationMs, completedAt, runID)
+	if err != nil {
+		return TimerRunEntry{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `
+		DELETE FROM timer_runs
+		WHERE id NOT IN (SELECT id FROM timer_runs ORDER BY id DESC LIMIT 200)
+	`)
+	var out TimerRunEntry
+	err = s.db.QueryRowContext(ctx, `
+		SELECT id, timer_id, timer_name, trigger_type, status, output, error, duration_ms, started_at, completed_at
+		FROM timer_runs
+		WHERE id = ?
+	`, runID).Scan(
+		&out.ID, &out.TimerID, &out.TimerName, &out.Trigger, &out.Status,
+		&out.Output, &out.Error, &out.DurationMs, &out.StartedAt, &out.CompletedAt,
+	)
+	return out, err
+}
+
+// ListTimerRuns returns recent timer execution logs (filtered by timerID when non-empty).
+func (s *Store) ListTimerRuns(ctx context.Context, timerID string, limit int) ([]TimerRunEntry, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if timerID != "" {
+		if err := ValidateIdent(timerID); err != nil {
+			return nil, err
+		}
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, timer_id, timer_name, trigger_type, status, output, error, duration_ms, started_at, completed_at
+			FROM timer_runs
+			WHERE timer_id = ?
+			ORDER BY id DESC
+			LIMIT ?
+		`, timerID, limit)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT id, timer_id, timer_name, trigger_type, status, output, error, duration_ms, started_at, completed_at
+			FROM timer_runs
+			ORDER BY id DESC
+			LIMIT ?
+		`, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TimerRunEntry{}
+	for rows.Next() {
+		var r TimerRunEntry
+		if err := rows.Scan(
+			&r.ID, &r.TimerID, &r.TimerName, &r.Trigger, &r.Status,
+			&r.Output, &r.Error, &r.DurationMs, &r.StartedAt, &r.CompletedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // GetSetting retrieves a persisted key-value setting from SQLite.
