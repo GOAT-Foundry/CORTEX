@@ -266,4 +266,36 @@ func TestServerEndpoints(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("delete timer status = %d", rec.Code)
 	}
+
+	// 8. Autonomous Tasks & Graph Execution (/api/tasks)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tasks", bytes.NewBufferString(`{"id":"task-run-1","goal":"Build domain analytics report","locale":"en"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create task status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/tasks/task-run-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get task status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var taskDetail struct {
+		Task      store.TaskRun        `json:"task"`
+		Artifacts []store.TaskArtifact `json:"artifacts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &taskDetail); err != nil {
+		t.Fatalf("decode task detail: %v", err)
+	}
+	if taskDetail.Task.Status != "completed" || len(taskDetail.Task.Nodes) != 3 {
+		t.Fatalf("expected completed task with 3 DAG nodes, got %+v", taskDetail.Task)
+	}
+	if len(taskDetail.Artifacts) != 4 {
+		t.Fatalf("expected 4 artifacts (3 workers + 1 report), got %d", len(taskDetail.Artifacts))
+	}
+
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/tasks/task-run-1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete task status = %d", rec.Code)
+	}
 }

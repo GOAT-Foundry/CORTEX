@@ -196,6 +196,43 @@ type MCPServerConfig struct {
 	UpdatedAt time.Time         `json:"updated_at"`
 }
 
+// TaskNode represents one subtask node in an autonomous Planner/Worker DAG.
+type TaskNode struct {
+	ID         string   `json:"id"`
+	Title      string   `json:"title"`
+	Prompt     string   `json:"prompt"`
+	AgentID    string   `json:"agent_id"`
+	DependsOn  []string `json:"depends_on"`
+	Status     string   `json:"status"` // "pending" | "running" | "completed" | "failed"
+	Output     string   `json:"output,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	DurationMs int64    `json:"duration_ms,omitempty"`
+}
+
+// TaskArtifact represents a structured output or final report produced by a TaskRun.
+type TaskArtifact struct {
+	ID        string    `json:"id"`
+	TaskID    string    `json:"task_id"`
+	NodeID    string    `json:"node_id,omitempty"`
+	Title     string    `json:"title"`
+	Kind      string    `json:"kind"` // "report" | "worker_output" | "json"
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskRun represents a high-level Goal decomposed and executed as a DAG of subtasks.
+type TaskRun struct {
+	ID          string     `json:"id"`
+	Goal        string     `json:"goal"`
+	Locale      string     `json:"locale"`
+	Status      string     `json:"status"` // "planning" | "running" | "completed" | "failed"
+	Nodes       []TaskNode `json:"nodes"`
+	FinalReport string     `json:"final_report,omitempty"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
 // Store wraps SQLite persistence for CORTEX collections, timers, and settings.
 type Store struct {
 	db *sql.DB
@@ -379,6 +416,33 @@ func (s *Store) migrate() error {
 		created_at DATETIME NOT NULL,
 		updated_at DATETIME NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS task_runs (
+		id           TEXT PRIMARY KEY,
+		goal         TEXT NOT NULL,
+		locale       TEXT NOT NULL DEFAULT 'en',
+		status       TEXT NOT NULL DEFAULT 'planning',
+		nodes_json   TEXT NOT NULL DEFAULT '[]',
+		final_report TEXT NOT NULL DEFAULT '',
+		error        TEXT NOT NULL DEFAULT '',
+		created_at   DATETIME NOT NULL,
+		updated_at   DATETIME NOT NULL
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_task_runs_created ON task_runs(created_at DESC);
+
+	CREATE TABLE IF NOT EXISTS task_artifacts (
+		id         TEXT PRIMARY KEY,
+		task_id    TEXT NOT NULL,
+		node_id    TEXT NOT NULL DEFAULT '',
+		title      TEXT NOT NULL,
+		kind       TEXT NOT NULL DEFAULT 'worker_output',
+		content    TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		FOREIGN KEY (task_id) REFERENCES task_runs(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_task_artifacts_task ON task_artifacts(task_id, created_at ASC);
 	`
 	_, err := s.db.Exec(schema)
 	if err != nil {
@@ -1500,6 +1564,206 @@ func (s *Store) ListChatMessages(ctx context.Context, sessionID string) ([]ChatM
 		_ = json.Unmarshal([]byte(tcRaw), &m.ToolCalls)
 		_ = json.Unmarshal([]byte(attRaw), &m.Attachments)
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SaveTaskRun inserts or updates an autonomous TaskRun record.
+func (s *Store) SaveTaskRun(ctx context.Context, tr TaskRun) (TaskRun, error) {
+	if err := ValidateIdent(tr.ID); err != nil {
+		return TaskRun{}, err
+	}
+	now := time.Now().UTC()
+	if tr.CreatedAt.IsZero() {
+		tr.CreatedAt = now
+	}
+	tr.UpdatedAt = now
+	if tr.Locale == "" {
+		tr.Locale = "en"
+	}
+	if tr.Status == "" {
+		tr.Status = "planning"
+	}
+	nodesJSON := "[]"
+	if len(tr.Nodes) > 0 {
+		if b, err := json.Marshal(tr.Nodes); err == nil {
+			nodesJSON = string(b)
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO task_runs (id, goal, locale, status, nodes_json, final_report, error, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			goal = excluded.goal,
+			locale = excluded.locale,
+			status = excluded.status,
+			nodes_json = excluded.nodes_json,
+			final_report = excluded.final_report,
+			error = excluded.error,
+			updated_at = excluded.updated_at
+	`, tr.ID, tr.Goal, tr.Locale, tr.Status, nodesJSON, tr.FinalReport, tr.Error, tr.CreatedAt, tr.UpdatedAt)
+	if err != nil {
+		return TaskRun{}, err
+	}
+	return s.GetTaskRun(ctx, tr.ID)
+}
+
+// UpdateTaskRun updates an existing TaskRun row without recreating a deleted row.
+func (s *Store) UpdateTaskRun(ctx context.Context, tr TaskRun) (bool, error) {
+	if err := ValidateIdent(tr.ID); err != nil {
+		return false, err
+	}
+	now := time.Now().UTC()
+	nodesJSON := "[]"
+	if len(tr.Nodes) > 0 {
+		if b, err := json.Marshal(tr.Nodes); err == nil {
+			nodesJSON = string(b)
+		}
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE task_runs
+		SET status = ?, nodes_json = ?, final_report = ?, error = ?, updated_at = ?
+		WHERE id = ?
+	`, tr.Status, nodesJSON, tr.FinalReport, tr.Error, now, tr.ID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// GetTaskRun fetches a single TaskRun by ID.
+func (s *Store) GetTaskRun(ctx context.Context, id string) (TaskRun, error) {
+	if err := ValidateIdent(id); err != nil {
+		return TaskRun{}, err
+	}
+	var tr TaskRun
+	var nodesRaw string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, goal, locale, status, nodes_json, final_report, error, created_at, updated_at
+		FROM task_runs
+		WHERE id = ?
+	`, id).Scan(
+		&tr.ID, &tr.Goal, &tr.Locale, &tr.Status, &nodesRaw,
+		&tr.FinalReport, &tr.Error, &tr.CreatedAt, &tr.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskRun{}, ErrNotFound
+	}
+	if err != nil {
+		return TaskRun{}, err
+	}
+	_ = json.Unmarshal([]byte(nodesRaw), &tr.Nodes)
+	if tr.Nodes == nil {
+		tr.Nodes = []TaskNode{}
+	}
+	return tr, nil
+}
+
+// ListTaskRuns returns recent TaskRun records ordered by created_at DESC.
+func (s *Store) ListTaskRuns(ctx context.Context, limit int) ([]TaskRun, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, goal, locale, status, nodes_json, final_report, error, created_at, updated_at
+		FROM task_runs
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TaskRun{}
+	for rows.Next() {
+		var tr TaskRun
+		var nodesRaw string
+		if err := rows.Scan(
+			&tr.ID, &tr.Goal, &tr.Locale, &tr.Status, &nodesRaw,
+			&tr.FinalReport, &tr.Error, &tr.CreatedAt, &tr.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(nodesRaw), &tr.Nodes)
+		if tr.Nodes == nil {
+			tr.Nodes = []TaskNode{}
+		}
+		out = append(out, tr)
+	}
+	return out, rows.Err()
+}
+
+// DeleteTaskRun deletes a TaskRun and its artifacts.
+func (s *Store) DeleteTaskRun(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM task_artifacts WHERE task_id = ?`, id)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM task_runs WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SaveTaskArtifact inserts or updates a TaskArtifact record if the parent TaskRun exists.
+func (s *Store) SaveTaskArtifact(ctx context.Context, a TaskArtifact) (TaskArtifact, error) {
+	if err := ValidateIdent(a.ID); err != nil {
+		return TaskArtifact{}, err
+	}
+	if err := ValidateIdent(a.TaskID); err != nil {
+		return TaskArtifact{}, err
+	}
+	if _, err := s.GetTaskRun(ctx, a.TaskID); err != nil {
+		return TaskArtifact{}, err
+	}
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	if a.Kind == "" {
+		a.Kind = "worker_output"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO task_artifacts (id, task_id, node_id, title, kind, content, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			title = excluded.title,
+			kind = excluded.kind,
+			content = excluded.content
+	`, a.ID, a.TaskID, a.NodeID, a.Title, a.Kind, a.Content, a.CreatedAt)
+	return a, err
+}
+
+// ListTaskArtifacts returns all artifacts generated by a TaskRun ordered chronologically.
+func (s *Store) ListTaskArtifacts(ctx context.Context, taskID string) ([]TaskArtifact, error) {
+	if err := ValidateIdent(taskID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, task_id, node_id, title, kind, content, created_at
+		FROM task_artifacts
+		WHERE task_id = ?
+		ORDER BY created_at ASC, id ASC
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TaskArtifact{}
+	for rows.Next() {
+		var a TaskArtifact
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.NodeID, &a.Title, &a.Kind, &a.Content, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

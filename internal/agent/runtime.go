@@ -29,6 +29,7 @@ import (
 	"github.com/GOAT-Foundry/CORTEX/internal/llmhub"
 	"github.com/GOAT-Foundry/CORTEX/internal/scheduler"
 	"github.com/GOAT-Foundry/CORTEX/internal/store"
+	"github.com/GOAT-Foundry/CORTEX/internal/taskengine"
 )
 
 // ProviderPreset is an alias for llmhub.Preset for backward compatibility.
@@ -70,6 +71,7 @@ type Runtime struct {
 	i18n        *i18n.Manager
 	hub         *llmhub.Hub
 	sched       *scheduler.Engine
+	tasks       *taskengine.Engine
 	skillsMu    sync.RWMutex
 	skills      *skill.Registry
 	transcripts *transcript.Store
@@ -96,6 +98,7 @@ func NewRuntime(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager) *Runt
 		transcripts: transcript.NewStore(transcriptDir),
 	}
 	rt.sched = scheduler.New(st, rt.RunScheduledPrompt)
+	rt.tasks = taskengine.New(st, rt.RunWorkerPrompt)
 	if st != nil {
 		rt.seedDefaultAgents(context.Background())
 	}
@@ -122,10 +125,21 @@ func (r *Runtime) Scheduler() *scheduler.Engine {
 	return r.sched
 }
 
+// TaskEngine returns the autonomous Planner/Worker DAG Task Engine.
+func (r *Runtime) TaskEngine() *taskengine.Engine {
+	return r.tasks
+}
+
 // RunScheduledPrompt executes a timer prompt in an isolated Norma session and returns the output text.
 func (r *Runtime) RunScheduledPrompt(ctx context.Context, agentID, prompt string) (string, error) {
+	return r.RunWorkerPrompt(ctx, agentID, prompt, "")
+}
+
+// RunWorkerPrompt executes an autonomous worker prompt in an isolated Norma session with locale sync.
+func (r *Runtime) RunWorkerPrompt(ctx context.Context, agentID, prompt, locale string) (string, error) {
 	sess, cleanup, err := r.NewSessionWithCleanup(ctx, SessionOptions{
 		AgentID: agentID,
+		Locale:  locale,
 	})
 	if err != nil {
 		return "", err
