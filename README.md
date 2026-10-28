@@ -135,7 +135,7 @@ go build -o cortex ./cmd/cortex
 - [x] **Standard Streaming Chat (`/chat`)**: Multi-turn chat persistence, agent switcher, SSE streaming (thinking & tool calls), and file attachments
 - [ ] **Autonomous Task & Graph Execution (`/tasks`)**: Goal decomposition, parallel Planner ⇄ Worker execution, and artifact/report generation
 - [ ] **Timers & Scheduler (`/timers`)**: Cron/interval schedules, one-shot `run_at` jobs, and the `schedule_timer` agent tool
-- [ ] **Extensibility Suite**: Agent/Prompt studio, Skills (`skills/`), MCP client manager, Custom Tools (Python/Bash/HTTP), and Web Search (`ddgs`)
+- [x] **Extensibility Suite**: Agent/Prompt studio, Skills (`skills/`), MCP client manager, Custom Tools (Python/Bash/HTTP), and Web Search (`ddgs`)
 
 ---
 

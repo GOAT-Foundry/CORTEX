@@ -153,6 +153,32 @@ type ChatMessage struct {
 	CreatedAt    time.Time        `json:"created_at"`
 }
 
+// CustomToolConfig defines a dynamic agent tool backed by Python, Bash, or HTTP.
+type CustomToolConfig struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Runner      string    `json:"runner"` // "python" | "bash" | "http"
+	Target      string    `json:"target"` // script content, shell command, or URL
+	Method      string    `json:"method"` // HTTP method when runner == "http"
+	SchemaJSON  string    `json:"schema_json"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// MCPServerConfig defines a Model Context Protocol stdio server connection.
+type MCPServerConfig struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Command   string            `json:"command"`
+	Args      []string          `json:"args"`
+	Env       map[string]string `json:"env,omitempty"`
+	Enabled   bool              `json:"enabled"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
+}
+
 // Store wraps SQLite persistence for CORTEX collections, timers, and settings.
 type Store struct {
 	db *sql.DB
@@ -293,6 +319,30 @@ func (s *Store) migrate() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, id ASC);
+
+	CREATE TABLE IF NOT EXISTS custom_tools (
+		id          TEXT PRIMARY KEY,
+		name        TEXT NOT NULL,
+		description TEXT NOT NULL,
+		runner      TEXT NOT NULL DEFAULT 'http',
+		target      TEXT NOT NULL,
+		method      TEXT NOT NULL DEFAULT 'POST',
+		schema_json TEXT NOT NULL DEFAULT '{"type":"object","properties":{"input":{"type":"string"}}}',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  DATETIME NOT NULL,
+		updated_at  DATETIME NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS mcp_servers (
+		id         TEXT PRIMARY KEY,
+		name       TEXT NOT NULL,
+		command    TEXT NOT NULL,
+		args_json  TEXT NOT NULL DEFAULT '[]',
+		env_json   TEXT NOT NULL DEFAULT '{}',
+		enabled    INTEGER NOT NULL DEFAULT 1,
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL
+	);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -795,6 +845,259 @@ func (s *Store) SaveAgent(ctx context.Context, a AgentProfile) (AgentProfile, er
 		return AgentProfile{}, err
 	}
 	return s.GetAgent(ctx, a.ID)
+}
+
+// DeleteAgent deletes a custom agent profile (protecting the "default" agent).
+func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	if id == "default" {
+		return errors.New("store: cannot delete default agent")
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListCustomTools returns all custom tools ordered by id ASC.
+func (s *Store) ListCustomTools(ctx context.Context) ([]CustomToolConfig, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, description, runner, target, method, schema_json, enabled, created_at, updated_at
+		FROM custom_tools
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []CustomToolConfig{}
+	for rows.Next() {
+		var ct CustomToolConfig
+		var enabled int
+		if err := rows.Scan(
+			&ct.ID, &ct.Name, &ct.Description, &ct.Runner, &ct.Target,
+			&ct.Method, &ct.SchemaJSON, &enabled, &ct.CreatedAt, &ct.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		ct.Enabled = enabled != 0
+		out = append(out, ct)
+	}
+	return out, rows.Err()
+}
+
+// GetCustomTool retrieves a custom tool by ID.
+func (s *Store) GetCustomTool(ctx context.Context, id string) (CustomToolConfig, error) {
+	if err := ValidateIdent(id); err != nil {
+		return CustomToolConfig{}, err
+	}
+	var ct CustomToolConfig
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, description, runner, target, method, schema_json, enabled, created_at, updated_at
+		FROM custom_tools
+		WHERE id = ?
+	`, id).Scan(
+		&ct.ID, &ct.Name, &ct.Description, &ct.Runner, &ct.Target,
+		&ct.Method, &ct.SchemaJSON, &enabled, &ct.CreatedAt, &ct.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return CustomToolConfig{}, ErrNotFound
+	}
+	ct.Enabled = enabled != 0
+	return ct, err
+}
+
+// SaveCustomTool inserts or updates a custom tool definition.
+func (s *Store) SaveCustomTool(ctx context.Context, ct CustomToolConfig) (CustomToolConfig, error) {
+	if err := ValidateIdent(ct.ID); err != nil {
+		return CustomToolConfig{}, err
+	}
+	if ct.Name == "" {
+		ct.Name = ct.ID
+	}
+	if err := ValidateIdent(ct.Name); err != nil {
+		return CustomToolConfig{}, err
+	}
+	switch ct.Runner {
+	case "python", "bash", "http":
+	default:
+		ct.Runner = "http"
+	}
+	if ct.Method == "" {
+		ct.Method = "POST"
+	}
+	if ct.SchemaJSON == "" || !json.Valid([]byte(ct.SchemaJSON)) {
+		ct.SchemaJSON = `{"type":"object","properties":{"input":{"type":"string","description":"Input parameter"}}}`
+	}
+	now := time.Now().UTC()
+	if ct.CreatedAt.IsZero() {
+		ct.CreatedAt = now
+	}
+	ct.UpdatedAt = now
+	enabled := 0
+	if ct.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO custom_tools (id, name, description, runner, target, method, schema_json, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			description = excluded.description,
+			runner = excluded.runner,
+			target = excluded.target,
+			method = excluded.method,
+			schema_json = excluded.schema_json,
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at
+	`, ct.ID, ct.Name, ct.Description, ct.Runner, ct.Target, ct.Method, ct.SchemaJSON, enabled, ct.CreatedAt, ct.UpdatedAt)
+	if err != nil {
+		return CustomToolConfig{}, err
+	}
+	return s.GetCustomTool(ctx, ct.ID)
+}
+
+// DeleteCustomTool deletes a custom tool by ID.
+func (s *Store) DeleteCustomTool(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM custom_tools WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ListMCPServers returns all configured MCP servers ordered by id ASC.
+func (s *Store) ListMCPServers(ctx context.Context) ([]MCPServerConfig, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, command, args_json, env_json, enabled, created_at, updated_at
+		FROM mcp_servers
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []MCPServerConfig{}
+	for rows.Next() {
+		var m MCPServerConfig
+		var argsRaw, envRaw string
+		var enabled int
+		if err := rows.Scan(&m.ID, &m.Name, &m.Command, &argsRaw, &envRaw, &enabled, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(argsRaw), &m.Args)
+		if m.Args == nil {
+			m.Args = []string{}
+		}
+		_ = json.Unmarshal([]byte(envRaw), &m.Env)
+		m.Enabled = enabled != 0
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// GetMCPServer retrieves an MCP server configuration by ID.
+func (s *Store) GetMCPServer(ctx context.Context, id string) (MCPServerConfig, error) {
+	if err := ValidateIdent(id); err != nil {
+		return MCPServerConfig{}, err
+	}
+	var m MCPServerConfig
+	var argsRaw, envRaw string
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, name, command, args_json, env_json, enabled, created_at, updated_at
+		FROM mcp_servers
+		WHERE id = ?
+	`, id).Scan(&m.ID, &m.Name, &m.Command, &argsRaw, &envRaw, &enabled, &m.CreatedAt, &m.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MCPServerConfig{}, ErrNotFound
+	}
+	_ = json.Unmarshal([]byte(argsRaw), &m.Args)
+	if m.Args == nil {
+		m.Args = []string{}
+	}
+	_ = json.Unmarshal([]byte(envRaw), &m.Env)
+	m.Enabled = enabled != 0
+	return m, err
+}
+
+// SaveMCPServer inserts or updates an MCP server configuration.
+func (s *Store) SaveMCPServer(ctx context.Context, m MCPServerConfig) (MCPServerConfig, error) {
+	if err := ValidateIdent(m.ID); err != nil {
+		return MCPServerConfig{}, err
+	}
+	if m.Name == "" {
+		m.Name = m.ID
+	}
+	argsJSON := "[]"
+	if len(m.Args) > 0 {
+		if b, err := json.Marshal(m.Args); err == nil {
+			argsJSON = string(b)
+		}
+	}
+	envJSON := "{}"
+	if len(m.Env) > 0 {
+		if b, err := json.Marshal(m.Env); err == nil {
+			envJSON = string(b)
+		}
+	}
+	now := time.Now().UTC()
+	if m.CreatedAt.IsZero() {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+	enabled := 0
+	if m.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO mcp_servers (id, name, command, args_json, env_json, enabled, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name,
+			command = excluded.command,
+			args_json = excluded.args_json,
+			env_json = excluded.env_json,
+			enabled = excluded.enabled,
+			updated_at = excluded.updated_at
+	`, m.ID, m.Name, m.Command, argsJSON, envJSON, enabled, m.CreatedAt, m.UpdatedAt)
+	if err != nil {
+		return MCPServerConfig{}, err
+	}
+	return s.GetMCPServer(ctx, m.ID)
+}
+
+// DeleteMCPServer deletes an MCP server configuration by ID.
+func (s *Store) DeleteMCPServer(ctx context.Context, id string) error {
+	if err := ValidateIdent(id); err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM mcp_servers WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ListChatSessions returns all chat sessions ordered by most recently updated.

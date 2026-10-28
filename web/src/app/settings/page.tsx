@@ -13,12 +13,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import {
   Activity,
+  Bot,
   CheckCircle2,
   Globe,
   KeyRound,
   Plug,
+  Plus,
   RefreshCw,
   Server,
+  Trash2,
   Wrench,
 } from "lucide-react";
 
@@ -74,6 +77,35 @@ interface UsageSummary {
   }>;
 }
 
+interface AgentItem {
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+}
+
+interface SkillItem {
+  name: string;
+  description: string;
+}
+
+interface MCPServerItem {
+  id: string;
+  name: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+}
+
+interface CustomToolItem {
+  id: string;
+  name: string;
+  description: string;
+  runner: string;
+  target: string;
+  enabled: boolean;
+}
+
 export default function SettingsPage() {
   const { dict, locale, directive } = useI18n();
 
@@ -89,6 +121,35 @@ export default function SettingsPage() {
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("");
 
+  // Extensibility states
+  const [agents, setAgents] = useState<AgentItem[]>([]);
+  const [newAgent, setNewAgent] = useState({
+    id: "",
+    name: "",
+    system_prompt: "",
+  });
+
+  const [skills, setSkills] = useState<SkillItem[]>([]);
+  const [newSkill, setNewSkill] = useState({
+    name: "",
+    description: "",
+    instructions: "",
+  });
+
+  const [mcpServers, setMcpServers] = useState<MCPServerItem[]>([]);
+  const [newMcp, setNewMcp] = useState({ id: "", command: "", args: "" });
+
+  const [customTools, setCustomTools] = useState<CustomToolItem[]>([]);
+  const [newTool, setNewTool] = useState({
+    name: "",
+    description: "",
+    runner: "python",
+    target: "",
+  });
+
+  const [webSearchBackend, setWebSearchBackend] = useState<string>("ddgs");
+  const [webSearchApiKey, setWebSearchApiKey] = useState<string>("");
+
   const loadAll = () => {
     fetch("/api/providers")
       .then((r) => (r.ok ? r.json() : null))
@@ -103,6 +164,41 @@ export default function SettingsPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) setUsage(data);
+      })
+      .catch(() => {});
+
+    fetch("/api/agents")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && Array.isArray(d.agents)) setAgents(d.agents);
+      })
+      .catch(() => {});
+
+    fetch("/api/skills")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && Array.isArray(d.skills)) setSkills(d.skills);
+      })
+      .catch(() => {});
+
+    fetch("/api/mcp")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && Array.isArray(d.servers)) setMcpServers(d.servers);
+      })
+      .catch(() => {});
+
+    fetch("/api/tools/custom")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && Array.isArray(d.tools)) setCustomTools(d.tools);
+      })
+      .catch(() => {});
+
+    fetch("/api/websearch")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.backend === "string") setWebSearchBackend(d.backend);
       })
       .catch(() => {});
   };
@@ -527,7 +623,109 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
+        {/* Agent & Prompt Studio */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Bot className="h-4 w-4 text-sky-400" />
+              {dict.settings.agentStudioTitle}
+            </CardTitle>
+            <CardDescription>
+              {dict.settings.agentStudioSubtitle}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {agents.map((ag) => (
+                <div
+                  key={ag.id}
+                  className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 flex flex-col justify-between gap-2"
+                >
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-zinc-100">
+                        {ag.name}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <Badge className="font-mono text-[10px]">{ag.id}</Badge>
+                        {ag.id !== "default" && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await fetch(`/api/agents/${ag.id}`, {
+                                method: "DELETE",
+                              });
+                              loadAll();
+                            }}
+                            className="text-zinc-500 hover:text-rose-400 cursor-pointer"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2">
+                      {ag.system_prompt}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input
+                  value={newAgent.id}
+                  onChange={(e) =>
+                    setNewAgent((p) => ({ ...p, id: e.target.value }))
+                  }
+                  placeholder={dict.settings.agentIdPlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+                <input
+                  value={newAgent.name}
+                  onChange={(e) =>
+                    setNewAgent((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder={dict.settings.agentNamePlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+              </div>
+              <textarea
+                rows={2}
+                value={newAgent.system_prompt}
+                onChange={(e) =>
+                  setNewAgent((p) => ({
+                    ...p,
+                    system_prompt: e.target.value,
+                  }))
+                }
+                placeholder={dict.settings.agentPromptPlaceholder}
+                className="w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  if (!newAgent.id || !newAgent.name || !newAgent.system_prompt)
+                    return;
+                  await fetch("/api/agents", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(newAgent),
+                  });
+                  setNewAgent({ id: "", name: "", system_prompt: "" });
+                  loadAll();
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {dict.settings.addBtn}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Skills & MCP Connections */}
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -538,7 +736,154 @@ export default function SettingsPage() {
               {dict.settings.skillsCardSubtitle}
             </CardDescription>
           </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {skills.map((s) => (
+                <Badge key={s.name} className="gap-1.5 py-1">
+                  <span className="font-mono text-sky-300">{s.name}</span>
+                  <span className="text-zinc-400">· {s.description}</span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetch(`/api/skills/${s.name}`, {
+                        method: "DELETE",
+                      });
+                      loadAll();
+                    }}
+                    className="hover:text-rose-400 cursor-pointer"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <input
+                  value={newSkill.name}
+                  onChange={(e) =>
+                    setNewSkill((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder={dict.settings.skillNamePlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+                <input
+                  value={newSkill.description}
+                  onChange={(e) =>
+                    setNewSkill((p) => ({ ...p, description: e.target.value }))
+                  }
+                  placeholder={dict.settings.skillDescPlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+              </div>
+              <textarea
+                rows={2}
+                value={newSkill.instructions}
+                onChange={(e) =>
+                  setNewSkill((p) => ({ ...p, instructions: e.target.value }))
+                }
+                placeholder={dict.settings.skillBodyPlaceholder}
+                className="w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  if (
+                    !newSkill.name ||
+                    !newSkill.description ||
+                    !newSkill.instructions
+                  )
+                    return;
+                  await fetch("/api/skills", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(newSkill),
+                  });
+                  setNewSkill({ name: "", description: "", instructions: "" });
+                  loadAll();
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                SKILL.md
+              </Button>
+            </div>
+
+            {/* MCP Servers */}
+            <div className="flex flex-wrap gap-2 pt-2">
+              {mcpServers.map((m) => (
+                <Badge key={m.id} className="gap-1.5 py-1 font-mono">
+                  <span>mcp__{m.id}</span>
+                  <span className="text-zinc-400">
+                    ({m.command} {(m.args || []).join(" ")})
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetch(`/api/mcp/${m.id}`, { method: "DELETE" });
+                      loadAll();
+                    }}
+                    className="hover:text-rose-400 cursor-pointer"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-2 text-xs">
+              <input
+                value={newMcp.id}
+                onChange={(e) =>
+                  setNewMcp((p) => ({ ...p, id: e.target.value }))
+                }
+                placeholder={dict.settings.mcpIdPlaceholder}
+                className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+              />
+              <input
+                value={newMcp.command}
+                onChange={(e) =>
+                  setNewMcp((p) => ({ ...p, command: e.target.value }))
+                }
+                placeholder={dict.settings.mcpCmdPlaceholder}
+                className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+              />
+              <input
+                value={newMcp.args}
+                onChange={(e) =>
+                  setNewMcp((p) => ({ ...p, args: e.target.value }))
+                }
+                placeholder={dict.settings.mcpArgsPlaceholder}
+                className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  if (!newMcp.id || !newMcp.command) return;
+                  await fetch("/api/mcp", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      id: newMcp.id,
+                      name: newMcp.id,
+                      command: newMcp.command,
+                      args: newMcp.args
+                        ? newMcp.args.split(" ").filter(Boolean)
+                        : [],
+                      enabled: true,
+                    }),
+                  });
+                  setNewMcp({ id: "", command: "", args: "" });
+                  loadAll();
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                MCP
+              </Button>
+            </div>
+          </CardContent>
         </Card>
+
+        {/* Custom Tools & Web Search (ddgs) */}
         <Card>
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">
@@ -547,6 +892,154 @@ export default function SettingsPage() {
             </CardTitle>
             <CardDescription>{dict.settings.toolsCardSubtitle}</CardDescription>
           </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-zinc-400">
+                {dict.settings.webSearchLabel}:
+              </span>
+              <select
+                value={webSearchBackend}
+                onChange={async (e) => {
+                  const next = e.target.value;
+                  setWebSearchBackend(next);
+                  await fetch("/api/websearch", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ backend: next }),
+                  });
+                }}
+                className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-100"
+              >
+                <option value="ddgs">ddgs (DuckDuckGo Keyless Default)</option>
+                <option value="brave-free">brave-free (Brave Search)</option>
+                <option value="tavily">tavily (Tavily Search)</option>
+              </select>
+              {webSearchBackend !== "ddgs" && (
+                <>
+                  <input
+                    type="password"
+                    value={webSearchApiKey}
+                    onChange={(e) => setWebSearchApiKey(e.target.value)}
+                    placeholder={dict.settings.apiKeyPlaceholder}
+                    className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-zinc-100 w-64"
+                  />
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      await fetch("/api/websearch", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          backend: webSearchBackend,
+                          brave_api_key:
+                            webSearchBackend === "brave-free"
+                              ? webSearchApiKey
+                              : "",
+                          tavily_api_key:
+                            webSearchBackend === "tavily"
+                              ? webSearchApiKey
+                              : "",
+                        }),
+                      });
+                      setWebSearchApiKey("");
+                    }}
+                  >
+                    {dict.settings.saveBtn}
+                  </Button>
+                </>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {customTools.map((ct) => (
+                <Badge key={ct.id} className="gap-1.5 py-1">
+                  <span className="font-mono text-sky-300">{ct.name}</span>
+                  <span className="uppercase text-[10px] text-zinc-400">
+                    [{ct.runner}]
+                  </span>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await fetch(`/api/tools/custom/${ct.id}`, {
+                        method: "DELETE",
+                      });
+                      loadAll();
+                    }}
+                    className="hover:text-rose-400 cursor-pointer"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                <input
+                  value={newTool.name}
+                  onChange={(e) =>
+                    setNewTool((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder={dict.settings.toolNamePlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+                <input
+                  value={newTool.description}
+                  onChange={(e) =>
+                    setNewTool((p) => ({ ...p, description: e.target.value }))
+                  }
+                  placeholder={dict.settings.toolDescPlaceholder}
+                  className="rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5"
+                />
+                <select
+                  value={newTool.runner}
+                  onChange={(e) =>
+                    setNewTool((p) => ({ ...p, runner: e.target.value }))
+                  }
+                  className="rounded border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-zinc-100"
+                >
+                  <option value="python">Python</option>
+                  <option value="bash">Bash</option>
+                  <option value="http">HTTP</option>
+                </select>
+              </div>
+              <textarea
+                rows={2}
+                value={newTool.target}
+                onChange={(e) =>
+                  setNewTool((p) => ({ ...p, target: e.target.value }))
+                }
+                placeholder={dict.settings.toolTargetPlaceholder}
+                className="w-full rounded border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 font-mono"
+              />
+              <Button
+                size="sm"
+                onClick={async () => {
+                  if (!newTool.name || !newTool.description || !newTool.target)
+                    return;
+                  await fetch("/api/tools/custom", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      id: newTool.name,
+                      ...newTool,
+                      enabled: true,
+                    }),
+                  });
+                  setNewTool({
+                    name: "",
+                    description: "",
+                    runner: "python",
+                    target: "",
+                  });
+                  loadAll();
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {dict.settings.addBtn}
+              </Button>
+            </div>
+          </CardContent>
         </Card>
       </div>
     </div>
