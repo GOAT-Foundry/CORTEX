@@ -27,6 +27,7 @@ import (
 	"github.com/GOAT-Foundry/CORTEX/internal/config"
 	"github.com/GOAT-Foundry/CORTEX/internal/i18n"
 	"github.com/GOAT-Foundry/CORTEX/internal/llmhub"
+	"github.com/GOAT-Foundry/CORTEX/internal/scheduler"
 	"github.com/GOAT-Foundry/CORTEX/internal/store"
 )
 
@@ -68,6 +69,7 @@ type Runtime struct {
 	store       *store.Store
 	i18n        *i18n.Manager
 	hub         *llmhub.Hub
+	sched       *scheduler.Engine
 	skillsMu    sync.RWMutex
 	skills      *skill.Registry
 	transcripts *transcript.Store
@@ -93,6 +95,7 @@ func NewRuntime(cfg config.Config, st *store.Store, i18nMgr *i18n.Manager) *Runt
 		skills:      skillsReg,
 		transcripts: transcript.NewStore(transcriptDir),
 	}
+	rt.sched = scheduler.New(st, rt.RunScheduledPrompt)
 	if st != nil {
 		rt.seedDefaultAgents(context.Background())
 	}
@@ -112,6 +115,41 @@ func (r *Runtime) seedDefaultAgents(ctx context.Context) {
 // Hub returns the underlying LLM Provider & Copilot Hub.
 func (r *Runtime) Hub() *llmhub.Hub {
 	return r.hub
+}
+
+// Scheduler returns the background Timer & Cron Scheduler engine.
+func (r *Runtime) Scheduler() *scheduler.Engine {
+	return r.sched
+}
+
+// RunScheduledPrompt executes a timer prompt in an isolated Norma session and returns the output text.
+func (r *Runtime) RunScheduledPrompt(ctx context.Context, agentID, prompt string) (string, error) {
+	sess, cleanup, err := r.NewSessionWithCleanup(ctx, SessionOptions{
+		AgentID: agentID,
+	})
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	var text string
+	var termErr error
+	for ev, err := range sess.Prompt(ctx, prompt) {
+		if err != nil {
+			return text, err
+		}
+		if ev.Kind == harness.KindText {
+			text += ev.Text
+		} else if ev.Kind == harness.KindResult && ev.Terminal != nil {
+			if text == "" && ev.Terminal.Text != "" {
+				text = ev.Terminal.Text
+			}
+			if ev.Terminal.Err != nil {
+				termErr = ev.Terminal.Err
+			}
+		}
+	}
+	return text, termErr
 }
 
 // SkillsList returns the names, descriptions, and instructions of loaded skills.
@@ -521,14 +559,15 @@ func (r *Runtime) cortexTools() []tool.CoreTool {
 
 	scheduleTimer := tool.Build(tool.Spec{
 		Name:        "schedule_timer",
-		Description: "Schedule a future or recurring autonomous agent task (cron, interval, or one-shot run_at timestamp).",
+		Description: "Schedule a future or recurring autonomous agent task (5-field cron expression, duration interval like '15m', or 'once' with an RFC3339 run_at timestamp).",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name":     map[string]any{"type": "string", "description": "Human-readable timer name"},
-				"schedule": map[string]any{"type": "string", "description": "Cron expression, duration (e.g. '15m'), or 'once'"},
+				"schedule": map[string]any{"type": "string", "description": "5-field cron (e.g. '0 * * * *'), duration (e.g. '15m'), or 'once'"},
 				"run_at":   map[string]any{"type": "string", "description": "RFC3339 timestamp when schedule is 'once'"},
 				"prompt":   map[string]any{"type": "string", "description": "Prompt to execute when triggered"},
+				"agent_id": map[string]any{"type": "string", "description": "Optional target agent persona ID (default 'default')"},
 			},
 			"required": []any{"name", "schedule", "prompt"},
 		},
@@ -539,8 +578,13 @@ func (r *Runtime) cortexTools() []tool.CoreTool {
 				Schedule string `json:"schedule"`
 				RunAt    string `json:"run_at"`
 				Prompt   string `json:"prompt"`
+				AgentID  string `json:"agent_id"`
 			}
 			if err := json.Unmarshal(input, &in); err != nil {
+				return tool.Errorf(err.Error()), nil
+			}
+			nextRun, err := scheduler.ValidateSchedule(in.Schedule, in.RunAt, time.Now().UTC())
+			if err != nil {
 				return tool.Errorf(err.Error()), nil
 			}
 			id := fmt.Sprintf("timer-%d", time.Now().UTC().UnixNano())
@@ -550,6 +594,8 @@ func (r *Runtime) cortexTools() []tool.CoreTool {
 				Schedule:  in.Schedule,
 				RunAt:     in.RunAt,
 				Prompt:    in.Prompt,
+				AgentID:   in.AgentID,
+				NextRunAt: nextRun.Format(time.RFC3339),
 				Enabled:   true,
 				CreatedBy: "agent",
 			})
@@ -561,7 +607,52 @@ func (r *Runtime) cortexTools() []tool.CoreTool {
 		},
 	})
 
-	return []tool.CoreTool{colList, colGet, colPut, colDelete, scheduleTimer}
+	listTimers := tool.Build(tool.Spec{
+		Name:        "list_timers",
+		Description: "List all scheduled recurring and one-shot timers in CORTEX.",
+		Schema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+		ReadOnly:    func(json.RawMessage) bool { return true },
+		Concurrent:  func(json.RawMessage) bool { return true },
+		Permissions: allowAll,
+		Run: func(ctx context.Context, _ json.RawMessage, _ *tool.ToolContext) (tool.Result, error) {
+			timers, err := r.store.ListTimers(ctx)
+			if err != nil {
+				return tool.Errorf(err.Error()), nil
+			}
+			b, _ := json.Marshal(timers)
+			return tool.Text(string(b)), nil
+		},
+	})
+
+	cancelTimer := tool.Build(tool.Spec{
+		Name:        "cancel_timer",
+		Description: "Cancel and delete a scheduled timer by its ID.",
+		Schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string", "description": "Timer ID to cancel"},
+			},
+			"required": []any{"id"},
+		},
+		Permissions: allowAll,
+		Run: func(ctx context.Context, input json.RawMessage, _ *tool.ToolContext) (tool.Result, error) {
+			var in struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(input, &in); err != nil {
+				return tool.Errorf(err.Error()), nil
+			}
+			if err := r.store.DeleteTimer(ctx, in.ID); err != nil {
+				return tool.Errorf(err.Error()), nil
+			}
+			return tool.Text(`{"canceled":true}`), nil
+		},
+	})
+
+	return []tool.CoreTool{colList, colGet, colPut, colDelete, scheduleTimer, listTimers, cancelTimer}
 }
 
 func (r *Runtime) buildCustomTools(ctx context.Context) []tool.CoreTool {
