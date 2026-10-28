@@ -21,7 +21,7 @@
 - **標準チャット機能 (`/chat`)**: エージェント切り替え、マルチターン会話履歴、SSE リアルタイムストリーミング（Thinking・ツール呼び出し可視化）、ファイル添付に対応。
 - **自律タスク & グラフ実行 (`/tasks`)**: 目標（Goal）の自動分解 → Planner ⇄ Worker サブエージェント並列実行 → 汎用成果物（Artifact）およびレポート生成。
 - **タイマー・スケジューラ機能 (`/timers`)**: 定期実行（Cron / インターバル）、日時指定ワンショット予約（`run_at`）、および AI エージェント自身が未来の自分のタスクを予約できる `schedule_timer` ツールを搭載。
-- **豊富な拡張機能**: エージェント/プロンプト管理、スキル管理（`skills/*/SKILL.md`）、MCP (Model Context Protocol) 接続、カスタムツール（Python / Bash / HTTP）、API キー不要の Web 検索（`ddgs`）。
+- **豊富な拡張機能**: エージェント/プロンプト管理、標準搭載スキル（`skills/*/SKILL.md`: `domain-collection-helper`, `web-research`, `data-analysis`, `scheduled-monitoring`, `shell-automation`）、MCP (Model Context Protocol) 接続、カスタムツール（Python / Bash / PowerShell / HTTP）、API キー不要の Web 検索（`ddgs`）。
 
 ---
 

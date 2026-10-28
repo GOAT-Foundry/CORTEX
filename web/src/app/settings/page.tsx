@@ -1000,6 +1000,9 @@ export default function SettingsPage() {
                 >
                   <option value="python">Python</option>
                   <option value="bash">Bash</option>
+                  <option value="powershell">
+                    PowerShell (Windows / pwsh)
+                  </option>
                   <option value="http">HTTP</option>
                 </select>
               </div>

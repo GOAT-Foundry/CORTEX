@@ -187,11 +187,11 @@
     "mcpIdPlaceholder": "サーバー ID (例: filesystem)",
     "mcpCmdPlaceholder": "コマンド (例: npx)",
     "mcpArgsPlaceholder": "引数 (スペース区切り)",
-    "toolsCardTitle": "カスタムツール (Python / Bash / HTTP) & Web 検索 (ddgs)",
+    "toolsCardTitle": "カスタムツール (Python / Bash / PowerShell / HTTP) & Web 検索 (ddgs)",
     "toolsCardSubtitle": "Go コード変更不要の動的ツール登録およびキー不要の DuckDuckGo 検索設定",
     "toolNamePlaceholder": "ツール名 (例: calc_metrics)",
     "toolDescPlaceholder": "ツールの説明",
-    "toolTargetPlaceholder": "Python コード、Bash コマンド、または HTTP URL",
+    "toolTargetPlaceholder": "Python コード、Bash / PowerShell コマンド、または HTTP URL",
     "webSearchLabel": "Web 検索バックエンド"
   }
 }

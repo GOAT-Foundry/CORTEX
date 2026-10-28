@@ -187,11 +187,11 @@
     "mcpIdPlaceholder": "Server ID (e.g. filesystem)",
     "mcpCmdPlaceholder": "Command (e.g. npx)",
     "mcpArgsPlaceholder": "Args (space-separated)",
-    "toolsCardTitle": "Custom Tools (Python / Bash / HTTP) & Web Search (ddgs)",
+    "toolsCardTitle": "Custom Tools (Python / Bash / PowerShell / HTTP) & Web Search (ddgs)",
     "toolsCardSubtitle": "Dynamic agent tools without Go code changes, plus keyless DuckDuckGo search",
     "toolNamePlaceholder": "Tool name (e.g. calc_metrics)",
     "toolDescPlaceholder": "Tool description",
-    "toolTargetPlaceholder": "Python code, Bash command, or HTTP URL",
+    "toolTargetPlaceholder": "Python code, Bash/PowerShell command, or HTTP URL",
     "webSearchLabel": "Web Search Backend"
   }
 }

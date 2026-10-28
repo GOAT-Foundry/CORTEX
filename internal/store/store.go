@@ -170,12 +170,12 @@ type ChatMessage struct {
 	CreatedAt    time.Time        `json:"created_at"`
 }
 
-// CustomToolConfig defines a dynamic agent tool backed by Python, Bash, or HTTP.
+// CustomToolConfig defines a dynamic agent tool backed by Python, Bash, PowerShell, or HTTP.
 type CustomToolConfig struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	Runner      string    `json:"runner"` // "python" | "bash" | "http"
+	Runner      string    `json:"runner"` // "python" | "bash" | "powershell" | "http"
 	Target      string    `json:"target"` // script content, shell command, or URL
 	Method      string    `json:"method"` // HTTP method when runner == "http"
 	SchemaJSON  string    `json:"schema_json"`
@@ -1237,7 +1237,7 @@ func (s *Store) SaveCustomTool(ctx context.Context, ct CustomToolConfig) (Custom
 		return CustomToolConfig{}, err
 	}
 	switch ct.Runner {
-	case "python", "bash", "http":
+	case "python", "bash", "powershell", "http":
 	default:
 		ct.Runner = "http"
 	}
