@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/GOAT-Foundry/CORTEX/internal/i18n"
 	"github.com/GOAT-Foundry/CORTEX/internal/scheduler"
 	"github.com/GOAT-Foundry/CORTEX/internal/store"
+	"github.com/GOAT-Foundry/CORTEX/internal/taskengine"
 	"github.com/GOAT-Foundry/CORTEX/internal/webui"
 )
 
@@ -117,6 +119,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("DELETE /api/timers/{id}", s.handleDeleteTimer)
 	s.mux.HandleFunc("POST /api/timers/{id}/run", s.handleRunTimerNow)
 	s.mux.HandleFunc("GET /api/timers/runs", s.handleListTimerRuns)
+
+	// Autonomous Tasks & Graph Execution API
+	s.mux.HandleFunc("GET /api/tasks", s.handleListTasks)
+	s.mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
+	s.mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	s.mux.HandleFunc("DELETE /api/tasks/{id}", s.handleDeleteTask)
 
 	// Agents & Chat Session Management API
 	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
@@ -883,6 +891,134 @@ func (s *Server) handleListTimerRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"tasks": []store.TaskRun{}})
+		return
+	}
+	tasks, err := s.store.ListTaskRuns(r.Context(), 30)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+}
+
+func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
+	if s.runtime == nil || s.runtime.TaskEngine() == nil {
+		writeError(w, http.StatusServiceUnavailable, "task engine unavailable")
+		return
+	}
+	var body struct {
+		ID     string           `json:"id"`
+		Goal   string           `json:"goal"`
+		Locale string           `json:"locale"`
+		Stream bool             `json:"stream"`
+		Nodes  []store.TaskNode `json:"nodes"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&body); err != nil || strings.TrimSpace(body.Goal) == "" {
+		writeError(w, http.StatusBadRequest, "goal is required")
+		return
+	}
+
+	effectiveLocale := s.i18n.ResolveLocale(
+		body.Locale,
+		r.Header.Get("X-Cortex-Locale"),
+		r.Header.Get("Accept-Language"),
+	)
+
+	in := taskengine.RunInput{
+		ID:     body.ID,
+		Goal:   body.Goal,
+		Locale: effectiveLocale,
+		Nodes:  body.Nodes,
+	}
+
+	wantsSSE := body.Stream || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	if wantsSSE {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "streaming unsupported")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		var sseMu sync.Mutex
+		tr, arts, err := s.runtime.TaskEngine().Execute(r.Context(), in, func(ev taskengine.Event) {
+			sseMu.Lock()
+			sendSSE(w, flusher, ev.Type, ev)
+			sseMu.Unlock()
+		})
+		if err != nil {
+			sseMu.Lock()
+			sendSSE(w, flusher, "error", map[string]any{"error": err.Error()})
+			sseMu.Unlock()
+			return
+		}
+		sseMu.Lock()
+		sendSSE(w, flusher, "done", map[string]any{
+			"task":      tr,
+			"artifacts": arts,
+		})
+		sseMu.Unlock()
+		return
+	}
+
+	tr, arts, err := s.runtime.TaskEngine().Execute(r.Context(), in, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"task":      tr,
+		"artifacts": arts,
+	})
+}
+
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	tr, err := s.store.GetTaskRun(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	arts, _ := s.store.ListTaskArtifacts(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task":      tr,
+		"artifacts": arts,
+	})
+}
+
+func (s *Server) handleDeleteTask(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeError(w, http.StatusServiceUnavailable, "store unavailable")
+		return
+	}
+	id := r.PathValue("id")
+	if s.runtime != nil && s.runtime.TaskEngine() != nil {
+		s.runtime.TaskEngine().CancelTask(id)
+	}
+	if err := s.store.DeleteTaskRun(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 }
 
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
